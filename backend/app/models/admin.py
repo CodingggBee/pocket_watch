@@ -1,21 +1,24 @@
-"""Admin model"""
-
+"""Admin model — public schema (company owners)"""
 import uuid
 from datetime import datetime
-
-from app.database import Base
-from sqlalchemy import Boolean, Column, DateTime, String
+from app.database import PublicBase
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String
 from sqlalchemy.orm import relationship
 
 
-class Admin(Base):
-    """Admin database model"""
+class Admin(PublicBase):
+    """Admin database model — company owner who signs up via email/password"""
 
     __tablename__ = "admins"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
 
-    # Admin fields
+    # Link to tenant company
+    company_id = Column(
+        String(36), ForeignKey("companies.company_id"), nullable=True, index=True
+    )
+
+    # Auth fields
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=True)
@@ -28,7 +31,8 @@ class Admin(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
 
-    # Relationships
+    # Relationships (public schema)
+    company = relationship("Company", foreign_keys=[company_id])
     otps = relationship(
         "AdminOTP", back_populates="admin", cascade="all, delete-orphan"
     )

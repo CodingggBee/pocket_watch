@@ -1,117 +1,110 @@
-"""
-PocketWatch Backend API
-FastAPI application with complete authentication flow
-"""
-from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
+"""PocketWatch FastAPI Application — Multi-Tenant"""
+
 from contextlib import asynccontextmanager
 
 from app.config import get_settings
 from app.database import init_db
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+
+# ── Import all public-schema models to register on PublicBase ──
+from app.models.company import Company  # noqa: F401
+from app.models.admin import Admin  # noqa: F401
+from app.models.admin_otp import AdminOTP  # noqa: F401
+from app.models.admin_refresh_token import AdminRefreshToken  # noqa: F401
+
+# ── Routers ──
 from app.routes.auth import router as admin_auth_router
-from app.routes.invitee_auth import router as invitee_auth_router
+from app.routes.users_auth import router as user_auth_router
+from app.routes.admin_plants import router as admin_plants_router
+from app.routes.admin_users import router as admin_users_router
 
 settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan events"""
-    # Startup
-    print("🚀 Starting PocketWatch API...")
-    print(f"📍 Environment: {settings.ENVIRONMENT}")
-    print(f"🗄️  Database: {settings.DATABASE_URL}")
-    
-    # Initialize database
+    """Startup: create public-schema tables. Tenant tables are provisioned on signup."""
+    print(f"Starting {settings.APP_NAME} API...")
     init_db()
-    print("✅ Database initialized")
-    
+    print("Public schema tables ready.")
     yield
-    
-    # Shutdown
-    print("👋 Shutting down PocketWatch API...")
+    print(f"Shutting down {settings.APP_NAME} API...")
 
 
-# Create FastAPI app
 app = FastAPI(
     title="PocketWatch API",
-    description="Backend API for PocketWatch with complete authentication flow",
-    version="1.0.0",
+    description=(
+        "Multi-tenant SPC & AI coaching platform for manufacturing.\n\n"
+        "**Architecture**: Schema-per-tenant in PostgreSQL — each company gets its own "
+        "`company_{id}` schema provisioned on signup."
+    ),
+    version="2.0.0",
     lifespan=lifespan,
-    docs_url="/docs" if settings.ENVIRONMENT == "development" else None,
-    redoc_url="/redoc" if settings.ENVIRONMENT == "development" else None
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
-
-# CORS middleware
+# ── CORS ──────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        settings.APP_URL,
-        "http://localhost:3000",
-        "http://localhost:8081",  # Expo dev server
-    ],
+    allow_origins=["*"],  # Restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# Custom exception handlers
+# ── Validation error handler (422) ────────────────────────────
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle validation errors"""
+    """Return clean, readable validation errors instead of raw Pydantic output."""
     errors = []
     for error in exc.errors():
-        field = " -> ".join(str(loc) for loc in error["loc"])
-        message = error["msg"]
-        errors.append(f"{field}: {message}")
-    
+        field = " -> ".join(str(loc) for loc in error["loc"] if loc != "body")
+        message = error["msg"].replace("Value error, ", "")
+        errors.append(f"{field}: {message}" if field else message)
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "detail": "Validation error",
-            "errors": errors
-        }
+        content={"detail": errors[0] if len(errors) == 1 else errors},
     )
 
 
-# Include routers
-app.include_router(admin_auth_router)  # Admin authentication (email/password/OTP via email)
-app.include_router(invitee_auth_router)  # Invitee authentication (phone/SMS OTP/PIN)
+# ── Global exception handlers ──────────────────────────────────
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    if settings.ENVIRONMENT == "development":
+        import traceback
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": str(exc), "traceback": traceback.format_exc()},
+        )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An internal error occurred"},
+    )
 
 
-# Root endpoint
+# ── Routers ───────────────────────────────────────────────────
+app.include_router(admin_auth_router)
+app.include_router(user_auth_router)
+app.include_router(admin_plants_router)
+app.include_router(admin_users_router)
+
+
+# ── Health check ──────────────────────────────────────────────
 @app.get("/", tags=["Health"])
 async def root():
-    """API health check"""
     return {
         "status": "healthy",
-        "message": "PocketWatch API is running",
-        "version": "1.0.0",
-        "environment": settings.ENVIRONMENT
+        "app": settings.APP_NAME,
+        "version": "2.0.0",
+        "architecture": "multi-tenant / schema-per-company",
     }
 
 
 @app.get("/health", tags=["Health"])
-async def health_check():
-    """Detailed health check"""
-    return {
-        "status": "healthy",
-        "api": "operational",
-        "database": "connected",
-        "environment": settings.ENVIRONMENT
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=settings.ENVIRONMENT == "development"
-    )
+async def health():
+    return {"status": "ok"}

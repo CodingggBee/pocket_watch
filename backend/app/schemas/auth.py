@@ -1,88 +1,91 @@
-"""Authentication schemas"""
-from pydantic import BaseModel, EmailStr, Field
+"""Pydantic schemas for admin authentication"""
+
+from typing import Any, Dict, Optional
+from pydantic import BaseModel, EmailStr, field_validator
+import re
 
 
-# Signup
 class SignupRequest(BaseModel):
-    """Signup request schema"""
     email: EmailStr
-    password: str = Field(..., min_length=8, max_length=100)
+    password: str
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain an uppercase letter")
+        if not re.search(r"[0-9]", v):
+            raise ValueError("Password must contain a digit")
+        return v
 
 
-class SignupResponse(BaseModel):
-    """Signup response schema"""
-    message: str
-    email: EmailStr
-    user_id: str
-
-
-# Verify OTP
-class VerifyOTPRequest(BaseModel):
-    """Verify OTP request schema"""
-    email: EmailStr
-    otp: str = Field(..., min_length=6, max_length=6)
-
-
-class TokenResponse(BaseModel):
-    """Token response schema"""
-    access_token: str
-    token_type: str = "bearer"
-    user: dict
-
-
-# Login
 class LoginRequest(BaseModel):
-    """Login request schema"""
     email: EmailStr
     password: str
 
 
-# Refresh Token
-class RefreshTokenResponse(BaseModel):
-    """Refresh token response schema"""
-    access_token: str
-    token_type: str = "bearer"
-
-
-# Forgot Password
-class ForgotPasswordRequest(BaseModel):
-    """Forgot password request schema"""
+class VerifyOTPRequest(BaseModel):
     email: EmailStr
+    otp: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
+class ResendOTPRequest(BaseModel):
+    email: EmailStr
+
+
+# ── Responses ──────────────────────────────────────────────
+
+
+class SignupResponse(BaseModel):
+    message: str
+    email: str
+    user_id: str
+    company_id: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: Dict[str, Any]
+
+
+class RefreshTokenResponse(BaseModel):
+    access_token: str
+    token_type: str
 
 
 class ForgotPasswordResponse(BaseModel):
-    """Forgot password response schema"""
     message: str
-    email: EmailStr
-
-
-# Reset Password
-class ResetPasswordRequest(BaseModel):
-    """Reset password request schema"""
-    email: EmailStr
-    otp: str = Field(..., min_length=6, max_length=6)
-    new_password: str = Field(..., min_length=8, max_length=100)
+    email: str
 
 
 class ResetPasswordResponse(BaseModel):
-    """Reset password response schema"""
     message: str
-
-
-# Resend OTP
-class ResendOTPRequest(BaseModel):
-    """Resend OTP request schema"""
-    email: EmailStr
-    purpose: str = Field(..., pattern="^(VERIFICATION|PASSWORD_RESET)$")
 
 
 class ResendOTPResponse(BaseModel):
-    """Resend OTP response schema"""
     message: str
-    email: EmailStr
+    email: str
 
 
-# Logout
 class LogoutResponse(BaseModel):
-    """Logout response schema"""
     message: str

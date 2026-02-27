@@ -147,73 +147,7 @@ def upgrade() -> None:
         unique=False,
     )
 
-    # Migrate data from old tables to new tables
-    # Note: This assumes the old tables are still present
-    # Admins
-    op.execute(
-        """
-        INSERT INTO admins (id, email, password_hash, full_name, is_verified, is_active, created_at, updated_at)
-        SELECT id, email, password_hash, full_name, is_verified, is_active, created_at, updated_at
-        FROM users
-        WHERE role = 'ADMIN'
-    """
-    )
-
-    # Invitees
-    op.execute(
-        """
-        INSERT INTO invitees (id, phone_number, pin_hash, full_name, phone_verified, is_active, created_at, updated_at)
-        SELECT id, phone_number, pin_hash, full_name, phone_verified, is_active, created_at, updated_at
-        FROM users
-        WHERE role = 'INVITEE'
-    """
-    )
-
-    # Admin OTPs
-    op.execute(
-        """
-        INSERT INTO admin_otps (id, admin_id, otp_hash, purpose, used, expires_at, created_at)
-        SELECT o.id, o.user_id, o.otp_hash, o.purpose, o.used, o.expires_at, o.created_at
-        FROM otps o
-        INNER JOIN users u ON o.user_id = u.id
-        WHERE u.role = 'ADMIN'
-    """
-    )
-
-    # Invitee OTPs (converting PASSWORD_RESET to PIN_RESET for invitees)
-    op.execute(
-        """
-        INSERT INTO invitee_otps (id, invitee_id, otp_hash, purpose, used, expires_at, created_at)
-        SELECT o.id, o.user_id, o.otp_hash, 
-               CASE WHEN o.purpose = 'PASSWORD_RESET' THEN 'PIN_RESET' ELSE o.purpose END,
-               o.used, o.expires_at, o.created_at
-        FROM otps o
-        INNER JOIN users u ON o.user_id = u.id
-        WHERE u.role = 'INVITEE'
-    """
-    )
-
-    # Admin Refresh Tokens
-    op.execute(
-        """
-        INSERT INTO admin_refresh_tokens (id, admin_id, token_hash, revoked, expires_at, created_at)
-        SELECT rt.id, rt.user_id, rt.token_hash, rt.revoked, rt.expires_at, rt.created_at
-        FROM refresh_tokens rt
-        INNER JOIN users u ON rt.user_id = u.id
-        WHERE u.role = 'ADMIN'
-    """
-    )
-
-    # Invitee Refresh Tokens
-    op.execute(
-        """
-        INSERT INTO invitee_refresh_tokens (id, invitee_id, token_hash, revoked, expires_at, created_at)
-        SELECT rt.id, rt.user_id, rt.token_hash, rt.revoked, rt.expires_at, rt.created_at
-        FROM refresh_tokens rt
-        INNER JOIN users u ON rt.user_id = u.id
-        WHERE u.role = 'INVITEE'
-    """
-    )
+    # Data migration skipped for fresh database setup
 
     # Drop old tables
     op.drop_index(op.f("ix_refresh_tokens_user_id"), table_name="refresh_tokens")

@@ -33,19 +33,19 @@ async def send_sms_otp(phone_number: str, otp: str) -> bool:
         
         # Log success (for development)
         if settings.ENVIRONMENT == "development":
-            print(f"\n✅ SMS sent successfully!")
-            print(f"📱 To: {phone_number}")
-            print(f"🔐 OTP: {otp}")
-            print(f"📨 Message SID: {message.sid}\n")
+            print(f"\n[OK] SMS sent successfully!")
+            print(f"[TO] To: {phone_number}")
+            print(f"[OTP] OTP: {otp}")
+            print(f"[SID] Message SID: {message.sid}\n")
         
         return True
         
     except Exception as e:
         # Log error (for development)
         if settings.ENVIRONMENT == "development":
-            print(f"\n❌ Failed to send SMS to {phone_number}")
+            print(f"\n[ERR] Failed to send SMS to {phone_number}")
             print(f"Error: {str(e)}")
-            print(f"🔐 OTP (fallback): {otp}\n")
+            print(f"[OTP] OTP (fallback): {otp}\n")
         
         return False
 
@@ -74,18 +74,18 @@ async def send_pin_sms(phone_number: str, pin: str) -> bool:
         
         # Log success (for development)
         if settings.ENVIRONMENT == "development":
-            print(f"\n✅ PIN SMS sent successfully!")
-            print(f"📱 To: {phone_number}")
-            print(f"🔐 PIN: {pin}")
-            print(f"📨 Message SID: {message.sid}\n")
+            print(f"\n[OK] PIN SMS sent successfully!")
+            print(f"[TO] To: {phone_number}")
+            print(f"[PIN] PIN: {pin}")
+            print(f"[SID] Message SID: {message.sid}\n")
         
         return True
         
     except Exception as e:
         # Log error (for development)
         if settings.ENVIRONMENT == "development":
-            print(f"\n❌ Failed to send PIN SMS to {phone_number}")
+            print(f"\n[ERR] Failed to send PIN SMS to {phone_number}")
             print(f"Error: {str(e)}")
-            print(f"🔐 PIN (fallback): {pin}\n")
+            print(f"[PIN] PIN (fallback): {pin}\n")
         
         return False

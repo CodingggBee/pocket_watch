@@ -1,4 +1,4 @@
-"""Authentication routes"""
+"""Authentication routes — Admin (company owner)"""
 
 from datetime import datetime, timedelta
 from typing import Optional
@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models.admin import Admin
 from app.models.admin_otp import AdminOTP, OTPPurpose
 from app.models.admin_refresh_token import AdminRefreshToken
+from app.models.company import Company
 from app.schemas.auth import (
     ForgotPasswordRequest,
     ForgotPasswordResponse,
@@ -41,7 +42,8 @@ from app.utils.jwt import (
     verify_refresh_token,
 )
 from app.utils.otp import generate_otp
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from app.utils.schema import provision_tenant_tables
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Header, Response, status
 from sqlalchemy.orm import Session
 
 settings = get_settings()
@@ -50,6 +52,7 @@ router = APIRouter(prefix="/admin/auth", tags=["Admin Authentication"])
 
 # ========================================
 # FLOW 1: SIGNUP → EMAIL VERIFICATION
+# Creates Company + provisions tenant schema
 # ========================================
 
 
@@ -58,95 +61,84 @@ router = APIRouter(prefix="/admin/auth", tags=["Admin Authentication"])
 )
 async def signup(data: SignupRequest, db: Session = Depends(get_db)):
     """
-    User Signup
+    Admin Signup
 
-    1. Validate email and password
-    2. Check if email already exists
-    3. Hash password with Argon2
-    4. Create user in database (not verified)
-    5. Generate 6-digit OTP
-    6. Hash OTP with Argon2
-    7. Store OTP in database
-    8. Send OTP via email
+    1. Validate email / password
+    2. Check email uniqueness
+    3. Create Company record in public schema
+    4. Create Admin record linked to that company
+    5. Generate + store OTP, send verification email
+    NOTE: Tenant schema is provisioned on OTP verification, not here.
     """
-    # Check if email already exists
-    existing_user = db.query(Admin).filter(Admin.email == data.email).first()
-    if existing_user:
+    # Check email uniqueness
+    if db.query(Admin).filter(Admin.email == data.email).first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
-    # Hash password
-    password_hashed = hash_password(data.password)
+    # Create company — name will be collected in a later onboarding step
+    new_company = Company(
+        company_name=None,
+        is_active=True,
+    )
+    db.add(new_company)
+    db.flush()  # get company_id without committing
 
-    # Create admin user
-    new_user = Admin(
+    # Create admin (company owner)
+    new_admin = Admin(
         email=data.email,
-        password_hash=password_hashed,
+        password_hash=hash_password(data.password),
+        company_id=new_company.company_id,
         is_verified=False,
         is_active=True,
     )
-
-    db.add(new_user)
+    db.add(new_admin)
     db.commit()
-    db.refresh(new_user)
+    db.refresh(new_admin)
+    db.refresh(new_company)
+
+    admin_email = new_admin.email
+    admin_id = new_admin.id
+    company_id = new_company.company_id
 
     # Generate OTP
     otp_code = generate_otp()
-    otp_hashed = hash_otp(otp_code)
-
-    # Store OTP in database
     otp_record = AdminOTP(
-        admin_id=new_user.id,
-        otp_hash=otp_hashed,
+        admin_id=admin_id,
+        otp_hash=hash_otp(otp_code),
         purpose=OTPPurpose.VERIFICATION,
         used=False,
         expires_at=datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
     )
-
     db.add(otp_record)
     db.commit()
 
-    # Send OTP via email
-    email_sent = await send_verification_email(to_email=new_user.email, otp=otp_code)
-
+    email_sent = await send_verification_email(to_email=admin_email, otp=otp_code)
     if not email_sent:
-        # Log warning but don't fail the request
-        print(f"⚠️  Warning: Failed to send verification email to {new_user.email}")
+        print(f"Warning: Failed to send verification email to {admin_email}")
 
     return SignupResponse(
-        message="Signup successful! Please check your email for verification code.",
-        email=new_user.email,
-        user_id=new_user.id,
+        message="Signup successful! Please check your email for the verification code.",
+        email=admin_email,
+        user_id=admin_id,
+        company_id=company_id,
     )
+
+
+# ========================================
+# FLOW 2: VERIFY OTP
+# ========================================
 
 
 @router.post("/verify-otp", response_model=TokenResponse)
 async def verify_otp_endpoint(
     data: VerifyOTPRequest, response: Response, db: Session = Depends(get_db)
 ):
-    """
-    Verify OTP and Complete Registration
-
-    1. Find user by email
-    2. Query latest unused OTP for VERIFICATION
-    3. Verify OTP hash
-    4. Mark OTP as used
-    5. Set user as verified
-    6. Generate access token (15 min)
-    7. Generate refresh token (30 days)
-    8. Hash and store refresh token
-    9. Set HTTP-only cookie with refresh token
-    10. Return access token and user data
-    """
-    # Find user
+    """Verify email OTP, provision tenant schema, mark admin as verified, issue tokens."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Find latest unused OTP
     otp_record = (
         db.query(AdminOTP)
         .filter(
@@ -158,60 +150,54 @@ async def verify_otp_endpoint(
         .order_by(AdminOTP.created_at.desc())
         .first()
     )
-
     if not otp_record:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP"
         )
-
-    # Verify OTP
     if not verify_otp(data.otp, otp_record.otp_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP")
 
-    # Mark OTP as used
     otp_record.used = True
-
-    # Set user as verified
     user.is_verified = True
-
     db.commit()
 
-    # Generate tokens
-    access_token = create_access_token(user.id)
-    refresh_token = create_refresh_token(user.id)
+    # Provision the tenant schema now that the email is verified
+    # Only create if not already provisioned (idempotent)
+    try:
+        provision_tenant_tables(user.company_id)
+    except Exception as e:
+        print(f"Warning: Failed to provision tenant schema: {e}")
 
-    # Hash and store refresh token
-    refresh_token_hashed = hash_token(refresh_token)
-    refresh_token_record = AdminRefreshToken(
-        admin_id=user.id,
-        token_hash=refresh_token_hashed,
-        expires_at=datetime.utcnow()
-        + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    company_id = user.company_id
+    user_id = user.id
+
+    access_token = create_access_token(user_id, extra={"company_id": company_id})
+    refresh_token = create_refresh_token(user_id)
+
+    db.add(AdminRefreshToken(
+        admin_id=user_id,
+        token_hash=hash_token(refresh_token),
+        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         revoked=False,
-    )
-
-    db.add(refresh_token_record)
+    ))
     db.commit()
 
-    # Set HTTP-only cookie
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=settings.ENVIRONMENT == "production",  # HTTPS only in production
+        secure=settings.ENVIRONMENT == "production",
         samesite="lax",
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,  # 30 days in seconds
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
     )
 
-    # Return response
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
         user={
-            "id": user.id,
+            "id": user_id,
             "email": user.email,
+            "company_id": company_id,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
             "created_at": user.created_at.isoformat(),
@@ -220,69 +206,40 @@ async def verify_otp_endpoint(
 
 
 # ========================================
-# FLOW 2: RETURNING USER LOGIN
+# FLOW 3: LOGIN
 # ========================================
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(data: LoginRequest, response: Response, db: Session = Depends(get_db)):
-    """
-    User Login
-
-    1. Find user by email
-    2. Verify password with Argon2
-    3. Check if user is verified
-    4. Generate new access token (15 min)
-    5. Generate new refresh token (30 days)
-    6. Hash and store refresh token
-    7. Set HTTP-only cookie
-    8. Return access token and user data
-    """
-    # Find user
+    """Email + password login for admin / company owner."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
-    if not user:
+    if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
         )
-
-    # Verify password
-    if not verify_password(data.password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
-        )
-
-    # Check if verified
     if not user.is_verified:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Email not verified. Please verify your email first.",
         )
-
-    # Check if active
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is inactive. Please contact support.",
         )
 
-    # Generate tokens
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(user.id, extra={"company_id": user.company_id})
     refresh_token = create_refresh_token(user.id)
 
-    # Hash and store refresh token
-    refresh_token_hashed = hash_token(refresh_token)
-    refresh_token_record = AdminRefreshToken(
+    db.add(AdminRefreshToken(
         admin_id=user.id,
-        token_hash=refresh_token_hashed,
-        expires_at=datetime.utcnow()
-        + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        token_hash=hash_token(refresh_token),
+        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         revoked=False,
-    )
-
-    db.add(refresh_token_record)
+    ))
     db.commit()
 
-    # Set HTTP-only cookie
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
@@ -298,6 +255,7 @@ async def login(data: LoginRequest, response: Response, db: Session = Depends(ge
         user={
             "id": user.id,
             "email": user.email,
+            "company_id": user.company_id,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
             "created_at": user.created_at.isoformat(),
@@ -306,38 +264,25 @@ async def login(data: LoginRequest, response: Response, db: Session = Depends(ge
 
 
 # ========================================
-# FLOW 3: PROTECTED ROUTE (Get Current User)
+# AUTH DEPENDENCY: get current admin
 # ========================================
 
 
-async def get_current_user(
-    authorization: Optional[str] = None, db: Session = Depends(get_db)
+async def get_current_admin(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
 ) -> Admin:
-    """
-    Dependency to get current authenticated user
-
-    1. Extract token from Authorization header
-    2. Verify JWT signature and expiration
-    3. Extract user_id from token
-    4. Query database for user
-    5. Return user object
-    """
+    """Validates Bearer token and returns the Admin object."""
     if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authorization header missing",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    # Extract token (format: "Bearer <token>")
     try:
         scheme, token = authorization.split()
         if scheme.lower() != "bearer":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication scheme",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise ValueError
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -345,7 +290,6 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Verify token and get user_id
     user_id = verify_access_token(token)
     if not user_id:
         raise HTTPException(
@@ -354,28 +298,17 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Get user from database
     user = db.query(Admin).filter(Admin.id == user_id).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
-        )
-
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive"
-        )
-
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account inactive")
     return user
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(current_user: Admin = Depends(get_current_user)):
-    """
-    Get Current User Profile
-
-    Protected endpoint - requires valid access token
-    """
+async def get_me(current_user: Admin = Depends(get_current_admin)):
+    """Get current admin profile."""
     return current_user
 
 
@@ -388,24 +321,12 @@ async def get_me(current_user: Admin = Depends(get_current_user)):
 async def refresh_token_endpoint(
     refresh_token: Optional[str] = Cookie(None), db: Session = Depends(get_db)
 ):
-    """
-    Refresh Access Token
-
-    1. Read refresh token from HTTP-only cookie
-    2. Verify JWT signature and expiration
-    3. Extract user_id from token
-    4. Query database for all non-revoked refresh tokens
-    5. Loop through and verify hash
-    6. If match found, generate new access token
-    7. Refresh token stays the same (reusable)
-    8. Return new access token
-    """
+    """Issue a new access token using the HTTP-only refresh token cookie."""
     if not refresh_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token missing"
         )
 
-    # Verify refresh token JWT
     user_id = verify_refresh_token(refresh_token)
     if not user_id:
         raise HTTPException(
@@ -413,8 +334,7 @@ async def refresh_token_endpoint(
             detail="Invalid or expired refresh token",
         )
 
-    # Get all non-revoked refresh tokens for this user
-    refresh_tokens = (
+    tokens = (
         db.query(AdminRefreshToken)
         .filter(
             AdminRefreshToken.admin_id == user_id,
@@ -424,70 +344,38 @@ async def refresh_token_endpoint(
         .all()
     )
 
-    # Verify token hash against stored tokens
-    token_found = False
-    for token_record in refresh_tokens:
-        if verify_token_hash(refresh_token, token_record.token_hash):
-            token_found = True
-            break
-
-    if not token_found:
+    if not any(verify_token_hash(refresh_token, t.token_hash) for t in tokens):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
         )
 
-    # Generate new access token
-    new_access_token = create_access_token(user_id)
-
+    # Get company_id for the new token
+    admin = db.query(Admin).filter(Admin.id == user_id).first()
+    company_id = admin.company_id if admin else None
+    new_access_token = create_access_token(user_id, extra={"company_id": company_id})
     return RefreshTokenResponse(access_token=new_access_token, token_type="bearer")
 
 
 # ========================================
-# FLOW 5: PASSWORD RESET
+# FLOW 5: FORGOT / RESET PASSWORD
 # ========================================
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
 async def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    """
-    Request Password Reset
-
-    1. Find user by email
-    2. Generate 6-digit OTP
-    3. Hash OTP with Argon2
-    4. Store OTP in database with PASSWORD_RESET purpose
-    5. Send OTP via email
-    """
-    # Find user
+    """Send password-reset OTP (always returns success to prevent enumeration)."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
-    if not user:
-        # Don't reveal if email exists - return success anyway
-        return ForgotPasswordResponse(
-            message="If an account with this email exists, you will receive a password reset code.",
-            email=data.email,
-        )
-
-    # Generate OTP
-    otp_code = generate_otp()
-    otp_hashed = hash_otp(otp_code)
-
-    # Store OTP
-    otp_record = AdminOTP(
-        admin_id=user.id,
-        otp_hash=otp_hashed,
-        purpose=OTPPurpose.PASSWORD_RESET,
-        used=False,
-        expires_at=datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
-    )
-
-    db.add(otp_record)
-    db.commit()
-
-    # Send email
-    email_sent = await send_password_reset_email(to_email=user.email, otp=otp_code)
-
-    if not email_sent:
-        print(f"⚠️  Warning: Failed to send password reset email to {user.email}")
+    if user:
+        otp_code = generate_otp()
+        db.add(AdminOTP(
+            admin_id=user.id,
+            otp_hash=hash_otp(otp_code),
+            purpose=OTPPurpose.PASSWORD_RESET,
+            used=False,
+            expires_at=datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
+        ))
+        db.commit()
+        await send_password_reset_email(to_email=user.email, otp=otp_code)
 
     return ForgotPasswordResponse(
         message="If an account with this email exists, you will receive a password reset code.",
@@ -497,25 +385,11 @@ async def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get
 
 @router.post("/reset-password", response_model=ResetPasswordResponse)
 async def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
-    """
-    Reset Password with OTP
-
-    1. Find user by email
-    2. Find latest unused OTP with PASSWORD_RESET purpose
-    3. Verify OTP hash
-    4. Mark OTP as used
-    5. Hash new password with Argon2
-    6. Update user password
-    7. SECURITY: Revoke ALL refresh tokens (logout all devices)
-    """
-    # Find user
+    """Reset password using OTP — revokes all existing refresh tokens."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Find latest unused OTP
     otp_record = (
         db.query(AdminOTP)
         .filter(
@@ -527,34 +401,19 @@ async def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_d
         .order_by(AdminOTP.created_at.desc())
         .first()
     )
-
-    if not otp_record:
+    if not otp_record or not verify_otp(data.otp, otp_record.otp_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP"
         )
 
-    # Verify OTP
-    if not verify_otp(data.otp, otp_record.otp_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP"
-        )
-
-    # Mark OTP as used
     otp_record.used = True
-
-    # Update password
     user.password_hash = hash_password(data.new_password)
-
-    # SECURITY: Revoke all refresh tokens (logout all devices)
     db.query(AdminRefreshToken).filter(
         AdminRefreshToken.admin_id == user.id, AdminRefreshToken.revoked == False
     ).update({"revoked": True})
-
     db.commit()
 
-    return ResetPasswordResponse(
-        message="Password reset successful. Please login with your new password."
-    )
+    return ResetPasswordResponse(message="Password reset successful. Please login.")
 
 
 # ========================================
@@ -564,56 +423,24 @@ async def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_d
 
 @router.post("/resend-otp", response_model=ResendOTPResponse)
 async def resend_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
-    """
-    Resend OTP
-
-    1. Find user by email
-    2. Generate new OTP
-    3. Hash and store with appropriate purpose
-    4. Send via email
-    """
-    # Find user
+    """Resend verification OTP to the admin's email."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Determine OTP purpose
-    purpose = (
-        OTPPurpose.VERIFICATION
-        if data.purpose == "VERIFICATION"
-        else OTPPurpose.PASSWORD_RESET
-    )
-
-    # Generate OTP
     otp_code = generate_otp()
-    otp_hashed = hash_otp(otp_code)
-
-    # Store OTP
-    otp_record = AdminOTP(
+    db.add(AdminOTP(
         admin_id=user.id,
-        otp_hash=otp_hashed,
-        purpose=purpose,
+        otp_hash=hash_otp(otp_code),
+        purpose=OTPPurpose.VERIFICATION,
         used=False,
         expires_at=datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
-    )
-
-    db.add(otp_record)
+    ))
     db.commit()
 
-    # Send email
-    if purpose == OTPPurpose.VERIFICATION:
-        email_sent = await send_verification_email(user.email, otp_code)
-    else:
-        email_sent = await send_password_reset_email(user.email, otp_code)
+    await send_verification_email(user.email, otp_code)
 
-    if not email_sent:
-        print(f"⚠️  Warning: Failed to resend OTP to {user.email}")
-
-    return ResendOTPResponse(
-        message=f"OTP has been resent to {user.email}", email=user.email
-    )
+    return ResendOTPResponse(message=f"OTP has been resent to {user.email}", email=user.email)
 
 
 # ========================================
@@ -627,40 +454,23 @@ async def logout(
     refresh_token: Optional[str] = Cookie(None),
     db: Session = Depends(get_db),
 ):
-    """
-    Logout User
-
-    1. Read refresh token from cookie
-    2. Verify JWT and extract user_id
-    3. Find matching token in database
-    4. Set revoked = True
-    5. Delete refresh token cookie
-    """
-    if not refresh_token:
-        # No token to revoke, just clear cookie
-        response.delete_cookie("refresh_token")
-        return LogoutResponse(message="Logged out successfully")
-
-    # Verify token
-    user_id = verify_refresh_token(refresh_token)
-    if user_id:
-        # Find and revoke the specific token
-        refresh_tokens = (
-            db.query(AdminRefreshToken)
-            .filter(
-                AdminRefreshToken.admin_id == user_id,
-                AdminRefreshToken.revoked == False,
+    """Revoke the current refresh token and clear the cookie."""
+    if refresh_token:
+        user_id = verify_refresh_token(refresh_token)
+        if user_id:
+            tokens = (
+                db.query(AdminRefreshToken)
+                .filter(
+                    AdminRefreshToken.admin_id == user_id,
+                    AdminRefreshToken.revoked == False,
+                )
+                .all()
             )
-            .all()
-        )
+            for t in tokens:
+                if verify_token_hash(refresh_token, t.token_hash):
+                    t.revoked = True
+                    db.commit()
+                    break
 
-        for token_record in refresh_tokens:
-            if verify_token_hash(refresh_token, token_record.token_hash):
-                token_record.revoked = True
-                db.commit()
-                break
-
-    # Delete cookie
     response.delete_cookie("refresh_token")
-
     return LogoutResponse(message="Logged out successfully")

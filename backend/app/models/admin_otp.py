@@ -1,10 +1,8 @@
-"""Admin OTP model"""
-
+"""Admin OTP model — public schema"""
 import enum
 import uuid
 from datetime import datetime
-
-from app.database import Base
+from app.database import PublicBase
 from sqlalchemy import Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, String
@@ -12,14 +10,12 @@ from sqlalchemy.orm import relationship
 
 
 class OTPPurpose(str, enum.Enum):
-    """OTP purposes"""
-
     VERIFICATION = "VERIFICATION"
     PASSWORD_RESET = "PASSWORD_RESET"
 
 
-class AdminOTP(Base):
-    """Admin OTP database model"""
+class AdminOTP(PublicBase):
+    """Admin OTP — public schema"""
 
     __tablename__ = "admin_otps"
 
@@ -31,7 +27,6 @@ class AdminOTP(Base):
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # Relationship
     admin = relationship("Admin", back_populates="otps")
 
     def __repr__(self):

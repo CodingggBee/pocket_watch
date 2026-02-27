@@ -146,19 +146,19 @@ async def send_otp_email(
         
         # Log success (for development)
         if settings.ENVIRONMENT == "development":
-            print(f"\n✅ Email sent successfully!")
-            print(f"📧 To: {to_email}")
-            print(f"🔐 OTP: {otp}")
-            print(f"📨 Email ID: {email.get('id')}\n")
+            print(f"\n[OK] Email sent successfully!")
+            print(f"[TO] To: {to_email}")
+            print(f"[OTP] OTP: {otp}")
+            print(f"[ID] Email ID: {email.get('id')}\n")
         
         return True
         
     except Exception as e:
         # Log error (for development)
         if settings.ENVIRONMENT == "development":
-            print(f"\n❌ Failed to send email to {to_email}")
+            print(f"\n[ERR] Failed to send email to {to_email}")
             print(f"Error: {str(e)}")
-            print(f"🔐 OTP (fallback): {otp}\n")
+            print(f"[OTP] OTP (fallback): {otp}\n")
         
         return False
 

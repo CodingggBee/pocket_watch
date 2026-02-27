@@ -1,15 +1,13 @@
-"""Admin Refresh Token model"""
-
+"""Admin Refresh Token model — public schema"""
 import uuid
 from datetime import datetime
-
-from app.database import Base
+from app.database import PublicBase
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String
 from sqlalchemy.orm import relationship
 
 
-class AdminRefreshToken(Base):
-    """Admin Refresh Token database model"""
+class AdminRefreshToken(PublicBase):
+    """Admin Refresh Token — public schema"""
 
     __tablename__ = "admin_refresh_tokens"
 
@@ -20,7 +18,6 @@ class AdminRefreshToken(Base):
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # Relationship
     admin = relationship("Admin", back_populates="refresh_tokens")
 
     def __repr__(self):
