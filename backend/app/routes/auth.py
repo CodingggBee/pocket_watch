@@ -46,7 +46,7 @@ from app.utils.jwt import (
 )
 from app.utils.otp import generate_otp
 from app.utils.schema import provision_tenant_tables
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Header, Response, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -65,9 +65,7 @@ bearer_scheme = HTTPBearer()
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
 async def signup(
-    data: SignupRequest,
-    response: Response,
-    db: Session = Depends(get_db)
+    data: SignupRequest, response: Response, db: Session = Depends(get_db)
 ):
 
     existing_admin = db.query(Admin).filter(Admin.email == data.email).first()
@@ -81,7 +79,7 @@ async def signup(
         if existing_admin.is_verified and existing_admin.profile_completed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered. Please login."
+                detail="Email already registered. Please login.",
             )
 
         # =========================
@@ -102,18 +100,14 @@ async def signup(
             otp_hash=hash_otp(otp_code),
             purpose=OTPPurpose.VERIFICATION,
             used=False,
-            expires_at=datetime.utcnow() + timedelta(
-                minutes=settings.OTP_EXPIRE_MINUTES
-            ),
+            expires_at=datetime.utcnow()
+            + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
         )
 
         db.add(otp_record)
         db.commit()
 
-        await send_verification_email(
-            to_email=existing_admin.email,
-            otp=otp_code
-        )
+        await send_verification_email(to_email=existing_admin.email, otp=otp_code)
 
         db.commit()
 
@@ -148,13 +142,16 @@ async def signup(
         db.refresh(new_company)
 
         otp_code = generate_otp()
-        db.add(AdminOTP(
-            admin_id=new_admin.id,
-            otp_hash=hash_otp(otp_code),
-            purpose=OTPPurpose.VERIFICATION,
-            used=False,
-            expires_at=datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
-        ))
+        db.add(
+            AdminOTP(
+                admin_id=new_admin.id,
+                otp_hash=hash_otp(otp_code),
+                purpose=OTPPurpose.VERIFICATION,
+                used=False,
+                expires_at=datetime.utcnow()
+                + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
+            )
+        )
         db.commit()
 
         await send_verification_email(to_email=new_admin.email, otp=otp_code)
@@ -179,7 +176,9 @@ async def verify_otp_endpoint(
     """Verify email OTP, provision tenant schema, mark admin as verified, issue tokens."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     otp_record = (
         db.query(AdminOTP)
@@ -197,7 +196,9 @@ async def verify_otp_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP"
         )
     if not verify_otp(data.otp, otp_record.otp_hash):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP"
+        )
 
     otp_record.used = True
     user.is_verified = True
@@ -216,12 +217,15 @@ async def verify_otp_endpoint(
     access_token = create_access_token(user_id, extra={"company_id": company_id})
     refresh_token = create_refresh_token(user_id)
 
-    db.add(AdminRefreshToken(
-        admin_id=user_id,
-        token_hash=hash_token(refresh_token),
-        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-        revoked=False,
-    ))
+    db.add(
+        AdminRefreshToken(
+            admin_id=user_id,
+            token_hash=hash_token(refresh_token),
+            expires_at=datetime.utcnow()
+            + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            revoked=False,
+        )
+    )
     db.commit()
 
     response.set_cookie(
@@ -275,9 +279,13 @@ async def get_current_admin(
 
     user = db.query(Admin).filter(Admin.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
+        )
     if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account inactive")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Account inactive"
+        )
     return user
 
 
@@ -299,7 +307,9 @@ async def create_account_info(
     """
     admin = db.query(Admin).filter(Admin.id == current_admin.id).first()
     if not admin:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Admin not found"
+        )
 
     if admin.profile_completed:
         raise HTTPException(
@@ -342,7 +352,11 @@ async def create_account_info(
 async def login(data: LoginRequest, response: Response, db: Session = Depends(get_db)):
     """Email + password login for admin / company owner."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
-    if not user or not user.password_hash or not verify_password(data.password, user.password_hash):
+    if (
+        not user
+        or not user.password_hash
+        or not verify_password(data.password, user.password_hash)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
         )
@@ -365,12 +379,15 @@ async def login(data: LoginRequest, response: Response, db: Session = Depends(ge
     access_token = create_access_token(user.id, extra={"company_id": user.company_id})
     refresh_token = create_refresh_token(user.id)
 
-    db.add(AdminRefreshToken(
-        admin_id=user.id,
-        token_hash=hash_token(refresh_token),
-        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-        revoked=False,
-    ))
+    db.add(
+        AdminRefreshToken(
+            admin_id=user.id,
+            token_hash=hash_token(refresh_token),
+            expires_at=datetime.utcnow()
+            + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            revoked=False,
+        )
+    )
     db.commit()
 
     response.set_cookie(
@@ -477,15 +494,20 @@ async def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get
     user = db.query(Admin).filter(Admin.email == data.email).first()
     if user:
         otp_code = generate_otp()
-        db.add(AdminOTP(
-            admin_id=user.id,
-            otp_hash=hash_otp(otp_code),
-            purpose=OTPPurpose.PASSWORD_RESET,
-            used=False,
-            expires_at=datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
-        ))
+        db.add(
+            AdminOTP(
+                admin_id=user.id,
+                otp_hash=hash_otp(otp_code),
+                purpose=OTPPurpose.PASSWORD_RESET,
+                used=False,
+                expires_at=datetime.utcnow()
+                + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
+            )
+        )
         db.commit()
-        await send_password_reset_email(to_email=user.email, otp=otp_code, user_name=user.full_name)
+        await send_password_reset_email(
+            to_email=user.email, otp=otp_code, user_name=user.full_name
+        )
 
     return ForgotPasswordResponse(
         message="If an account with this email exists, you will receive a password reset code.",
@@ -498,7 +520,9 @@ async def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_d
     """Reset password using OTP — revokes all existing refresh tokens."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     otp_record = (
         db.query(AdminOTP)
@@ -536,7 +560,9 @@ async def resend_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
     """Resend verification OTP to the admin's email."""
     user = db.query(Admin).filter(Admin.email == data.email).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     if user.is_verified:
         raise HTTPException(
@@ -552,20 +578,27 @@ async def resend_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
     ).update({"used": True})
 
     otp_code = generate_otp()
-    db.add(AdminOTP(
-        admin_id=user.id,
-        otp_hash=hash_otp(otp_code),
-        purpose=OTPPurpose.VERIFICATION,
-        used=False,
-        expires_at=datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
-    ))
+    db.add(
+        AdminOTP(
+            admin_id=user.id,
+            otp_hash=hash_otp(otp_code),
+            purpose=OTPPurpose.VERIFICATION,
+            used=False,
+            expires_at=datetime.utcnow()
+            + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
+        )
+    )
     db.commit()
 
-    email_sent = await send_verification_email(user.email, otp_code, user_name=user.full_name)
+    email_sent = await send_verification_email(
+        user.email, otp_code, user_name=user.full_name
+    )
     if not email_sent:
         print(f"Warning: Failed to send verification email to {user.email}")
 
-    return ResendOTPResponse(message=f"OTP has been resent to {user.email}", email=user.email)
+    return ResendOTPResponse(
+        message=f"OTP has been resent to {user.email}", email=user.email
+    )
 
 
 # ========================================
@@ -576,7 +609,7 @@ async def resend_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
 @router.post("/logout", response_model=LogoutResponse)
 async def logout(
     response: Response,
-    data: Optional[RefreshTokenRequest] = None,   # for mobile
+    data: Optional[RefreshTokenRequest] = None,  # for mobile
     refresh_token: Optional[str] = Cookie(None),  # for web
     db: Session = Depends(get_db),
 ):
