@@ -1,6 +1,6 @@
 """
 Vercel serverless entry point for FastAPI.
-Uses Mangum to adapt ASGI (FastAPI) to AWS Lambda/Vercel format.
+Vercel has native ASGI support, so we just export the app directly.
 """
 
 import os
@@ -18,10 +18,7 @@ try:
 except Exception as e:
     print(f"⚠ DB init deferred: {e}")
 
-# Import FastAPI app and Mangum adapter
-from main import app  # noqa: E402
-from mangum import Mangum  # noqa: E402
+# Import and export FastAPI app
+from main import app  # noqa: E402, F401
 
-# Create the Lambda/Vercel handler
-# lifespan="off" because we handle initialization above
-handler = Mangum(app, lifespan="off")
+# Vercel will use 'app' directly via native ASGI support
