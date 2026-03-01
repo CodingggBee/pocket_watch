@@ -43,6 +43,16 @@ app-example
 .env
 .env*.local
 .env.example
+
+# Python backend
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/**/*.pyc
+backend/*.db
+backend/*.sqlite3
+
 # generated native folders
 /ios
 /android
