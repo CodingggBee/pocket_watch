@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Initialize database on cold start (non-blocking)
 try:
     from app.database import init_db
+
     init_db()
     print("✓ Database initialized")
 except Exception as e:
