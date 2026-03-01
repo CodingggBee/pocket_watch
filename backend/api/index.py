@@ -1,6 +1,6 @@
 """
 Vercel serverless entry point for FastAPI.
-Exposes the FastAPI app for Vercel's Python runtime.
+Uses Mangum to adapt ASGI (FastAPI) to AWS Lambda/Vercel format.
 """
 
 import os
@@ -12,14 +12,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Initialize database on cold start (non-blocking)
 try:
     from app.database import init_db
-
     init_db()
     print("✓ Database initialized")
 except Exception as e:
     print(f"⚠ DB init deferred: {e}")
 
-# Import the FastAPI application
+# Import FastAPI app and Mangum adapter
 from main import app  # noqa: E402
+from mangum import Mangum  # noqa: E402
 
-# Vercel expects 'app' variable for ASGI applications
-# No need for Mangum - Vercel handles ASGI→Lambda internally
+# Create the Lambda/Vercel handler
+# lifespan="off" because we handle initialization above
+handler = Mangum(app, lifespan="off")
