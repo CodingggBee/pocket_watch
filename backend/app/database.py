@@ -85,6 +85,80 @@ def get_tenant_db(company_id: str) -> Generator[Session, None, None]:
 
 
 # ──────────────────────────────────────────────
+# Cross-tenant phone lookup
+# ──────────────────────────────────────────────
+def find_company_by_phone(phone_number: str) -> dict | None:
+    """
+    Search across ALL tenant schemas to find which company a phone number belongs to.
+
+    Returns dict with company_id, company_name, user row, and plant memberships,
+    or None if not found.
+    """
+    from app.utils.schema import get_schema_name  # avoid circular import
+
+    db = SessionLocal()
+    try:
+        # Get all active companies
+        companies = db.execute(
+            text("SELECT company_id, company_name FROM companies WHERE is_active = true")
+        ).fetchall()
+
+        for company in companies:
+            cid = company[0]
+            cname = company[1]
+            schema = get_schema_name(cid)
+
+            # Check if the schema actually exists
+            exists = db.execute(
+                text(
+                    "SELECT 1 FROM information_schema.schemata WHERE schema_name = :s"
+                ),
+                {"s": schema},
+            ).fetchone()
+            if not exists:
+                continue
+
+            # Look for the phone number in this tenant's users table
+            user_row = db.execute(
+                text(
+                    f'SELECT user_id, phone_number, full_name, is_active '
+                    f'FROM "{schema}".users '
+                    f'WHERE phone_number = :phone'
+                ),
+                {"phone": phone_number},
+            ).fetchone()
+
+            if user_row:
+                # Fetch plant memberships for this user
+                plants = db.execute(
+                    text(
+                        f'SELECT p.plant_id, p.plant_name, pm.role '
+                        f'FROM "{schema}".plant_memberships pm '
+                        f'JOIN "{schema}".plants p ON p.plant_id = pm.plant_id '
+                        f'WHERE pm.user_id = :uid AND pm.is_active = true AND p.is_active = true'
+                    ),
+                    {"uid": user_row[0]},
+                ).fetchall()
+
+                return {
+                    "company_id": cid,
+                    "company_name": cname or "Pocketwatch.ai Company",
+                    "user_id": user_row[0],
+                    "phone_number": user_row[1],
+                    "full_name": user_row[2],
+                    "is_active": user_row[3],
+                    "plants": [
+                        {"plant_id": pl[0], "plant_name": pl[1], "role": pl[2]}
+                        for pl in plants
+                    ],
+                }
+
+        return None
+    finally:
+        db.close()
+
+
+# ──────────────────────────────────────────────
 # Initialise public schema tables on startup
 # ──────────────────────────────────────────────
 def init_db():

@@ -8,8 +8,7 @@ node_modules/
 dist/
 web-build/
 expo-env.d.ts
-backend/.env
-backend/.env.example
+
 # Native
 .kotlin/
 *.orig.*
@@ -41,7 +40,9 @@ mcp.json
 *.tsbuildinfo
 
 app-example
-
+.env
+.env*.local
+.env.example
 # generated native folders
 /ios
 /android

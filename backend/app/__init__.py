@@ -1,1 +1,1 @@
-"""PocketWatch Backend API"""
+"""Pocketwatch.ai Backend API"""

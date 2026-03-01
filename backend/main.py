@@ -1,4 +1,4 @@
-"""PocketWatch FastAPI Application — Multi-Tenant"""
+"""Pocketwatch.ai FastAPI Application — Multi-Tenant"""
 
 from contextlib import asynccontextmanager
 
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="PocketWatch API",
+    title="Pocketwatch.ai API",
     description=(
         "Multi-tenant SPC & AI coaching platform for manufacturing.\n\n"
         "**Architecture**: Schema-per-tenant in PostgreSQL — each company gets its own "

@@ -7,18 +7,6 @@ import re
 
 class SignupRequest(BaseModel):
     email: EmailStr
-    password: str
-
-    @field_validator("password")
-    @classmethod
-    def password_strength(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain an uppercase letter")
-        if not re.search(r"[0-9]", v):
-            raise ValueError("Password must contain a digit")
-        return v
 
 
 class LoginRequest(BaseModel):
@@ -52,6 +40,36 @@ class ResendOTPRequest(BaseModel):
     email: EmailStr
 
 
+class CreateAccountInfoRequest(BaseModel):
+    first_name: str
+    last_name: str
+    phone_number: str
+    phone_country_code: Optional[str] = None
+    password: str
+    confirm_password: str
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain an uppercase letter")
+        if not re.search(r"[0-9]", v):
+            raise ValueError("Password must contain a digit")
+        if not re.search(r"[^A-Za-z0-9]", v):
+            raise ValueError("Password must contain a special character")
+        return v
+
+    @field_validator("confirm_password")
+    @classmethod
+    def passwords_match(cls, v: str, info) -> str:
+        password = info.data.get("password")
+        if password and v != password:
+            raise ValueError("Passwords do not match")
+        return v
+
+
 # ── Responses ──────────────────────────────────────────────
 
 
@@ -64,13 +82,20 @@ class SignupResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str
+    expires_in: int  # access token lifetime in seconds
     user: Dict[str, Any]
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 
 class RefreshTokenResponse(BaseModel):
     access_token: str
     token_type: str
+    expires_in: int
 
 
 class ForgotPasswordResponse(BaseModel):
@@ -89,3 +114,8 @@ class ResendOTPResponse(BaseModel):
 
 class LogoutResponse(BaseModel):
     message: str
+
+
+class CreateAccountInfoResponse(BaseModel):
+    message: str
+    user: Dict[str, Any]

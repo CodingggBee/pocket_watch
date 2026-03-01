@@ -20,10 +20,17 @@ class Admin(PublicBase):
 
     # Auth fields
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
-    full_name = Column(String(255), nullable=True)
+    password_hash = Column(String(255), nullable=True)  # set during create-account-info step
     is_verified = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+
+    # Profile fields (collected during create-account-info step)
+    first_name = Column(String(255), nullable=True)
+    last_name = Column(String(255), nullable=True)
+    full_name = Column(String(255), nullable=True)
+    phone_number = Column(String(20), nullable=True)
+    phone_country_code = Column(String(5), nullable=True)
+    profile_completed = Column(Boolean, default=False, nullable=False)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

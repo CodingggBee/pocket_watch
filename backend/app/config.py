@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str
     FROM_EMAIL: str
 
+    # Email fallback (Gmail SMTP)
+    GMAIL_USER: str = ""
+    GMAIL_APP_PASSWORD: str = ""
+
     # SMS (Twilio) - For User auth
     TWILIO_ACCOUNT_SID: str
     TWILIO_AUTH_TOKEN: str
@@ -31,7 +35,7 @@ class Settings(BaseSettings):
     PINECONE_INDEX_NAME: str = "pocketwatch-docs"
 
     # App
-    APP_NAME: str = "PocketWatch"
+    APP_NAME: str = "Pocketwatch.ai"
     APP_URL: str = "http://localhost:3000"
     API_URL: str = "http://localhost:8000"
 
