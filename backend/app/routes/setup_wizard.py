@@ -195,7 +195,6 @@ class PlantSetupRequest(BaseModel):
 
 class DepartmentCreate(BaseModel):
     department_name: str
-    department_code: Optional[str] = None
 
 
 class ProductModelCreate(BaseModel):
@@ -384,7 +383,7 @@ async def setup_plant(
     current_admin: Admin = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Screen 1: Plant Setup"""
+    """Screen 1: Plant Setup - Creates or updates plant with shifts"""
     subscription = _check_setup_access(current_admin, db)
     tenant_db = _get_tenant_db(current_admin)
     
@@ -397,16 +396,28 @@ async def setup_plant(
             company.company_name = data.company_name
             db.commit()
         
-        # Create plant
-        plant = Plant(
-            plant_name=data.plant_name,
-            address=data.address,
-            is_active=True
-        )
-        tenant_db.add(plant)
-        tenant_db.flush()
+        # Check if plant already exists (for the setup wizard, there should only be one active plant)
+        existing_plant = tenant_db.query(Plant).filter(Plant.is_active == True).first()
         
-        # Create shifts
+        if existing_plant:
+            # UPDATE existing plant
+            existing_plant.plant_name = data.plant_name
+            existing_plant.address = data.address
+            plant = existing_plant
+            
+            # Delete old shifts and create new ones
+            tenant_db.query(Shift).filter(Shift.plant_id == plant.plant_id).delete()
+        else:
+            # CREATE new plant
+            plant = Plant(
+                plant_name=data.plant_name,
+                address=data.address,
+                is_active=True
+            )
+            tenant_db.add(plant)
+            tenant_db.flush()
+        
+        # Create shifts (fresh set based on current form data)
         for shift_data in data.shifts:
             shift = Shift(
                 plant_id=plant.plant_id,
@@ -416,13 +427,23 @@ async def setup_plant(
             )
             tenant_db.add(shift)
         
-        # Create setup progress tracker
-        progress = SetupProgress(
-            plant_id=plant.plant_id,
-            current_step=SetupStep.DEPARTMENTS,
-            plant_setup_completed=True
-        )
-        tenant_db.add(progress)
+        # Get or create setup progress tracker
+        progress = tenant_db.query(SetupProgress).filter(
+            SetupProgress.plant_id == plant.plant_id
+        ).first()
+        
+        if not progress:
+            progress = SetupProgress(
+                plant_id=plant.plant_id,
+                current_step=SetupStep.DEPARTMENTS,
+                plant_setup_completed=True
+            )
+            tenant_db.add(progress)
+        else:
+            # Update existing progress
+            progress.plant_setup_completed = True
+            progress.current_step = SetupStep.DEPARTMENTS
+            progress.last_updated_at = datetime.utcnow()
         
         tenant_db.commit()
         
@@ -439,9 +460,17 @@ async def setup_plant(
 async def setup_departments(
     departments: List[DepartmentCreate],
     plant_id: str,
+    replace_all: bool = False,
     current_admin: Admin = Depends(get_current_admin),
 ):
-    """Screen 2: Add Departments"""
+    """Screen 2: Add Departments - Creates or updates departments for the plant
+    
+    Args:
+        departments: List of departments to create/update
+        plant_id: Plant UUID
+        replace_all: If True, deletes existing departments and replaces with new list.
+                     If False (default), creates new departments or updates existing ones by name.
+    """
     tenant_db = _get_tenant_db(current_admin)
     
     try:
@@ -452,17 +481,41 @@ async def setup_departments(
         if not plant:
             raise HTTPException(404, detail="Plant not found")
         
-        # Create departments
-        created_depts = []
+        if replace_all:
+            # Replace mode: Delete all existing departments
+            # (cascade will delete related lines/models/stations)
+            tenant_db.query(Department).filter(
+                Department.plant_id == plant_id
+            ).delete()
+        
+        # Get existing departments for this plant
+        existing_depts = tenant_db.query(Department).filter(
+            Department.plant_id == plant_id
+        ).all()
+        existing_dept_names = {dept.department_name.lower(): dept for dept in existing_depts}
+        
+        created_or_updated_depts = []
+        
         for dept_data in departments:
-            dept = Department(
-                plant_id=plant_id,
-                department_name=dept_data.department_name,
-                department_code=dept_data.department_code,
-                is_active=True
-            )
-            tenant_db.add(dept)
-            created_depts.append(dept)
+            dept_name_lower = dept_data.department_name.lower()
+            
+            if dept_name_lower in existing_dept_names:
+                # Update existing department
+                existing_dept = existing_dept_names[dept_name_lower]
+                existing_dept.department_name = dept_data.department_name  # Update with correct case
+                existing_dept.is_active = True
+                created_or_updated_depts.append(existing_dept)
+            else:
+                # Create new department
+                new_dept = Department(
+                    plant_id=plant_id,
+                    department_name=dept_data.department_name,
+                    is_active=True
+                )
+                tenant_db.add(new_dept)
+                created_or_updated_depts.append(new_dept)
+        
+        tenant_db.flush()  # Flush to get IDs
         
         # Update progress
         progress = tenant_db.query(SetupProgress).filter(
@@ -473,12 +526,17 @@ async def setup_departments(
             progress.departments_completed = True
             progress.current_step = SetupStep.LINES_MODELS
             progress.last_updated_at = datetime.utcnow()
+            
+            # Save department IDs to wizard_metadata for tracking
+            if not progress.wizard_metadata:
+                progress.wizard_metadata = {}
+            progress.wizard_metadata["department_ids"] = [d.department_id for d in created_or_updated_depts]
         
         tenant_db.commit()
         
         return {
-            "message": f"Created {len(created_depts)} departments",
-            "department_ids": [d.department_id for d in created_depts],
+            "message": f"Processed {len(created_or_updated_depts)} departments",
+            "department_ids": [d.department_id for d in created_or_updated_depts],
             "next_step": "lines_models"
         }
     finally:
@@ -489,9 +547,17 @@ async def setup_departments(
 async def setup_lines_and_models(
     data: LinesModelsRequest,
     plant_id: str,
+    replace_all: bool = False,
     current_admin: Admin = Depends(get_current_admin),
 ):
-    """Screen 3: Add Production Lines and Models"""
+    """Screen 3: Add Production Lines and Models - Creates or updates lines/models for a department
+    
+    Args:
+        data: Lines and models data
+        plant_id: Plant UUID
+        replace_all: If True, deletes existing lines/models for this department and replaces with new list.
+                     If False (default), creates new lines or updates existing ones by name.
+    """
     tenant_db = _get_tenant_db(current_admin)
     
     try:
@@ -504,31 +570,70 @@ async def setup_lines_and_models(
         if not dept:
             raise HTTPException(404, detail="Department not found")
         
-        created_lines = []
-        created_models = []
+        if replace_all:
+            # Replace mode: Delete existing lines for this department
+            # (cascade will delete related models and stations)
+            tenant_db.query(ProductionLine).filter(
+                ProductionLine.department_id == data.department_id
+            ).delete()
+        
+        # Get existing lines for this department
+        existing_lines = tenant_db.query(ProductionLine).filter(
+            ProductionLine.department_id == data.department_id
+        ).all()
+        existing_line_names = {line.line_name.lower(): line for line in existing_lines}
+        
+        created_or_updated_lines = []
+        created_or_updated_models = []
         
         for line_data in data.lines:
-            # Create production line
-            line = ProductionLine(
-                plant_id=plant_id,
-                department_id=data.department_id,
-                line_name=line_data.line_name,
-                is_active=True
-            )
-            tenant_db.add(line)
-            tenant_db.flush()
-            created_lines.append(line)
+            line_name_lower = line_data.line_name.lower()
             
-            # Create models for this line
-            for model_data in line_data.models:
-                model = ProductModel(
-                    line_id=line.line_id,
-                    model_name=model_data.model_name,
-                    model_code=model_data.model_code,
+            if line_name_lower in existing_line_names:
+                # Update existing line
+                line = existing_line_names[line_name_lower]
+                line.line_name = line_data.line_name  # Update with correct case
+                line.is_active = True
+            else:
+                # Create new production line
+                line = ProductionLine(
+                    plant_id=plant_id,
+                    department_id=data.department_id,
+                    line_name=line_data.line_name,
                     is_active=True
                 )
-                tenant_db.add(model)
-                created_models.append(model)
+                tenant_db.add(line)
+                tenant_db.flush()
+            
+            created_or_updated_lines.append(line)
+            
+            # Get existing models for this line
+            existing_models = tenant_db.query(ProductModel).filter(
+                ProductModel.line_id == line.line_id
+            ).all()
+            existing_model_codes = {model.model_code.lower(): model for model in existing_models}
+            
+            # Create or update models for this line
+            for model_data in line_data.models:
+                model_code_lower = model_data.model_code.lower()
+                
+                if model_code_lower in existing_model_codes:
+                    # Update existing model
+                    model = existing_model_codes[model_code_lower]
+                    model.model_name = model_data.model_name
+                    model.model_code = model_data.model_code
+                    model.is_active = True
+                else:
+                    # Create new model
+                    model = ProductModel(
+                        line_id=line.line_id,
+                        model_name=model_data.model_name,
+                        model_code=model_data.model_code,
+                        is_active=True
+                    )
+                    tenant_db.add(model)
+                
+                created_or_updated_models.append(model)
         
         # Update progress
         progress = tenant_db.query(SetupProgress).filter(
@@ -539,13 +644,19 @@ async def setup_lines_and_models(
             progress.lines_models_completed = True
             progress.current_step = SetupStep.STATIONS
             progress.last_updated_at = datetime.utcnow()
+            
+            # Save line/model IDs to wizard_metadata for tracking
+            if not progress.wizard_metadata:
+                progress.wizard_metadata = {}
+            progress.wizard_metadata["line_ids"] = [l.line_id for l in created_or_updated_lines]
+            progress.wizard_metadata["model_ids"] = [m.model_id for m in created_or_updated_models]
         
         tenant_db.commit()
         
         return {
-            "message": f"Created {len(created_lines)} lines with {len(created_models)} models",
-            "line_ids": [l.line_id for l in created_lines],
-            "model_ids": [m.model_id for m in created_models],
+            "message": f"Processed {len(created_or_updated_lines)} lines with {len(created_or_updated_models)} models",
+            "line_ids": [l.line_id for l in created_or_updated_lines],
+            "model_ids": [m.model_id for m in created_or_updated_models],
             "next_step": "stations"
         }
     finally:
@@ -665,12 +776,123 @@ async def get_shifts_for_setup(
         tenant_db.close()
 
 
+@router.get("/departments")
+async def get_departments_list(
+    plant_id: str,
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """Get list of departments for dropdowns in Screen 3 and 4"""
+    tenant_db = _get_tenant_db(current_admin)
+    
+    try:
+        tenant_db = _ensure_tenant_schema(current_admin, tenant_db)
+        
+        # Verify plant exists
+        plant = tenant_db.query(Plant).filter(Plant.plant_id == plant_id).first()
+        if not plant:
+            raise HTTPException(404, detail="Plant not found")
+        
+        # Get all departments for this plant
+        departments = tenant_db.query(Department).filter(
+            Department.plant_id == plant_id,
+            Department.is_active == True
+        ).all()
+        
+        if not departments:
+            raise HTTPException(400, detail="No departments found. Please complete Departments screen first.")
+        
+        return {
+            "plant_id": plant_id,
+            "departments": [
+                {
+                    "department_id": dept.department_id,
+                    "department_name": dept.department_name
+                }
+                for dept in departments
+            ]
+        }
+    finally:
+        tenant_db.close()
+
+
+@router.get("/lines")
+async def get_lines_list(
+    plant_id: str,
+    department_id: str,
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """Get list of production lines for a department (for Screen 4 dropdown)"""
+    tenant_db = _get_tenant_db(current_admin)
+    
+    try:
+        tenant_db = _ensure_tenant_schema(current_admin, tenant_db)
+        
+        # Get lines for this department
+        lines = tenant_db.query(ProductionLine).filter(
+            ProductionLine.plant_id == plant_id,
+            ProductionLine.department_id == department_id,
+            ProductionLine.is_active == True
+        ).all()
+        
+        if not lines:
+            raise HTTPException(400, detail="No production lines found for this department.")
+        
+        return {
+            "plant_id": plant_id,
+            "department_id": department_id,
+            "lines": [
+                {
+                    "line_id": line.line_id,
+                    "line_name": line.line_name
+                }
+                for line in lines
+            ]
+        }
+    finally:
+        tenant_db.close()
+
+
+@router.get("/models")
+async def get_models_list(
+    line_id: str,
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """Get list of product models for a line (for Screen 4 dropdown)"""
+    tenant_db = _get_tenant_db(current_admin)
+    
+    try:
+        tenant_db = _ensure_tenant_schema(current_admin, tenant_db)
+        
+        # Get models for this line
+        models = tenant_db.query(ProductModel).filter(
+            ProductModel.line_id == line_id,
+            ProductModel.is_active == True
+        ).all()
+        
+        if not models:
+            raise HTTPException(400, detail="No product models found for this line.")
+        
+        return {
+            "line_id": line_id,
+            "models": [
+                {
+                    "model_id": model.model_id,
+                    "model_name": model.model_name,
+                    "model_code": model.model_code
+                }
+                for model in models
+            ]
+        }
+    finally:
+        tenant_db.close()
+
+
 @router.post("/screen5-users", status_code=status.HTTP_201_CREATED)
 async def setup_users(
     data: UsersSetupRequest,
     current_admin: Admin = Depends(get_current_admin),
 ):
-    """Screen 5: User Setup — Add team members and complete setup"""
+    """Screen 5: User Setup — Add team members and complete setup (creates or updates users)"""
     tenant_db = _get_tenant_db(current_admin)
     
     try:
@@ -693,7 +915,7 @@ async def setup_users(
         if len(data.users) == 0:
             raise HTTPException(400, detail="At least one user required")
         
-        created_users = []
+        created_or_updated_users = []
         
         for user_data in data.users:
             # Check if user already exists
@@ -701,12 +923,6 @@ async def setup_users(
             existing_user = tenant_db.query(User).filter(
                 User.phone_number == full_phone
             ).first()
-            
-            if existing_user:
-                raise HTTPException(
-                    400,
-                    detail=f"User with phone {full_phone} already exists"
-                )
             
             # Verify shift exists
             shift = tenant_db.query(Shift).filter(
@@ -720,71 +936,108 @@ async def setup_users(
                     detail=f"Shift {user_data.shift_id} not found for this plant"
                 )
             
-            # Generate PIN and hash it
-            pin = _generate_pin()
-            pin_hash = _hash_pin(pin)
-            
-            # Create user
             full_name = f"{user_data.first_name} {user_data.last_name}"
-            new_user = User(
-                phone_number=full_phone,
-                phone_country_code=user_data.phone_country_code,
-                first_name=user_data.first_name,
-                last_name=user_data.last_name,
-                full_name=full_name,
-                email=user_data.email,
-                default_shift_id=user_data.shift_id,
-                pin_hash=pin_hash,
-                phone_verified=False,
-                is_active=True
-            )
-            tenant_db.add(new_user)
-            tenant_db.flush()
             
-            # Create plant membership with role
-            role = PlantRole.MANAGER if user_data.role == 'manager' else PlantRole.MEMBER
-            membership = PlantMembership(
-                plant_id=data.plant_id,
-                user_id=new_user.user_id,
-                role=role,
-                invited_by=current_admin.id,
-                accepted_at=None,  # Will accept when they first login
-                is_active=True
-            )
-            tenant_db.add(membership)
-            
-            # Create offsite access grant if needed
-            if user_data.offsite_permission:
-                offsite_grant = OffsiteAccessGrant(
-                    plant_id=data.plant_id,
-                    user_id=new_user.user_id,
-                    granted_by=current_admin.id,
+            if existing_user:
+                # UPDATE existing user
+                existing_user.first_name = user_data.first_name
+                existing_user.last_name = user_data.last_name
+                existing_user.full_name = full_name
+                existing_user.email = user_data.email
+                existing_user.default_shift_id = user_data.shift_id
+                user_id = existing_user.user_id
+                pin_sent = False  # Don't resend PIN for existing users
+            else:
+                # CREATE new user
+                pin = _generate_pin()
+                pin_hash = _hash_pin(pin)
+                
+                new_user = User(
+                    phone_number=full_phone,
+                    phone_country_code=user_data.phone_country_code,
+                    first_name=user_data.first_name,
+                    last_name=user_data.last_name,
+                    full_name=full_name,
+                    email=user_data.email,
+                    default_shift_id=user_data.shift_id,
+                    pin_hash=pin_hash,
+                    phone_verified=False,
                     is_active=True
                 )
-                tenant_db.add(offsite_grant)
+                tenant_db.add(new_user)
+                tenant_db.flush()
+                user_id = new_user.user_id
+                
+                # Send welcome notification with PIN for new users
+                try:
+                    await _send_user_welcome_notification(
+                        user_data.phone_country_code,
+                        user_data.phone_number,
+                        user_data.email,
+                        user_data.first_name,
+                        pin
+                    )
+                    pin_sent = True
+                except Exception as e:
+                    print(f"[USER SETUP] Failed to send notification: {e}")
+                    pin_sent = False
             
-            # Send welcome notification with PIN
-            try:
-                await _send_user_welcome_notification(
-                    user_data.phone_country_code,
-                    user_data.phone_number,
-                    user_data.email,
-                    user_data.first_name,
-                    pin
+            # Update or create plant membership with role
+            role = PlantRole.MANAGER if user_data.role == 'manager' else PlantRole.MEMBER
+            membership = tenant_db.query(PlantMembership).filter(
+                PlantMembership.plant_id == data.plant_id,
+                PlantMembership.user_id == user_id
+            ).first()
+            
+            if membership:
+                # Update existing membership
+                membership.role = role
+                membership.is_active = True
+            else:
+                # Create new membership
+                membership = PlantMembership(
+                    plant_id=data.plant_id,
+                    user_id=user_id,
+                    role=role,
+                    invited_by=current_admin.id,
+                    accepted_at=None,  # Will accept when they first login
+                    is_active=True
                 )
-            except Exception as e:
-                print(f"[USER SETUP] Failed to send notification: {e}")
-                # Continue even if notification fails
+                tenant_db.add(membership)
             
-            created_users.append({
-                "user_id": new_user.user_id,
+            # Update or create offsite access grant
+            offsite_grant = tenant_db.query(OffsiteAccessGrant).filter(
+                OffsiteAccessGrant.plant_id == data.plant_id,
+                OffsiteAccessGrant.user_id == user_id
+            ).first()
+            
+            if user_data.offsite_permission:
+                if not offsite_grant:
+                    # Create new grant
+                    offsite_grant = OffsiteAccessGrant(
+                        plant_id=data.plant_id,
+                        user_id=user_id,
+                        granted_by=current_admin.id,
+                        is_active=True
+                    )
+                    tenant_db.add(offsite_grant)
+                else:
+                    # Ensure it's active
+                    offsite_grant.is_active = True
+            else:
+                if offsite_grant:
+                    # Revoke offsite access
+                    offsite_grant.is_active = False
+            
+            created_or_updated_users.append({
+                "user_id": user_id,
                 "full_name": full_name,
                 "phone": full_phone,
                 "email": user_data.email,
                 "role": user_data.role,
                 "shift_id": user_data.shift_id,
                 "offsite_permission": user_data.offsite_permission,
-                "pin_sent": True  # Notification attempted
+                "pin_sent": pin_sent
             })
         
         # Mark user setup as completed
@@ -796,9 +1049,9 @@ async def setup_users(
         tenant_db.commit()
         
         return {
-            "message": "Users created successfully! Setup completed.",
-            "users_created": len(created_users),
-            "users": created_users,
+            "message": "Users created/updated successfully! Setup completed.",
+            "users_processed": len(created_or_updated_users),
+            "users": created_or_updated_users,
             "setup_completed": True,
             "redirect_to": "dashboard"
         }
@@ -857,3 +1110,233 @@ async def add_new_station(
     """Add a new station from anywhere in the app (post-setup)"""
     # Same logic as screen4-station
     return await setup_station(data, plant_id, current_admin, db)
+
+
+# ==================== GET Endpoints for State Restoration ====================
+
+@router.get("/screen1-plant")
+async def get_plant_setup_data(
+    plant_id: str,
+    current_admin: Admin = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Get saved plant setup data for restoration"""
+    tenant_db = _get_tenant_db(current_admin)
+    
+    try:
+        tenant_db = _ensure_tenant_schema(current_admin, tenant_db)
+        
+        # Get plant
+        plant = tenant_db.query(Plant).filter(Plant.plant_id == plant_id).first()
+        if not plant:
+            raise HTTPException(404, detail="Plant not found")
+        
+        # Get company name
+        company = db.query(Company).filter(Company.company_id == current_admin.company_id).first()
+        
+        # Get shifts
+        shifts = tenant_db.query(Shift).filter(
+            Shift.plant_id == plant_id
+        ).order_by(Shift.start_time).all()
+        
+        return {
+            "company_name": company.company_name if company else "",
+            "plant_name": plant.plant_name,
+            "address": plant.address,
+            "shifts": [
+                {
+                    "start_time": _format_time(shift.start_time),
+                    "end_time": _format_time(shift.end_time),
+                    "shift_name": shift.shift_name
+                }
+                for shift in shifts
+            ]
+        }
+    finally:
+        tenant_db.close()
+
+
+@router.get("/screen2-departments")
+async def get_departments_data(
+    plant_id: str,
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """Get saved departments for restoration"""
+    tenant_db = _get_tenant_db(current_admin)
+    
+    try:
+        tenant_db = _ensure_tenant_schema(current_admin, tenant_db)
+        
+        # Get departments
+        departments = tenant_db.query(Department).filter(
+            Department.plant_id == plant_id,
+            Department.is_active == True
+        ).all()
+        
+        return {
+            "departments": [
+                {
+                    "department_id": dept.department_id,
+                    "department_name": dept.department_name
+                }
+                for dept in departments
+            ]
+        }
+    finally:
+        tenant_db.close()
+
+
+@router.get("/screen3-lines-models")
+async def get_lines_models_data(
+    plant_id: str,
+    department_id: str,
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """Get saved production lines and models for restoration"""
+    tenant_db = _get_tenant_db(current_admin)
+    
+    try:
+        tenant_db = _ensure_tenant_schema(current_admin, tenant_db)
+        
+        # Get lines for this department
+        lines = tenant_db.query(ProductionLine).filter(
+            ProductionLine.plant_id == plant_id,
+            ProductionLine.department_id == department_id,
+            ProductionLine.is_active == True
+        ).all()
+        
+        lines_data = []
+        for line in lines:
+            # Get models for this line
+            models = tenant_db.query(ProductModel).filter(
+                ProductModel.line_id == line.line_id,
+                ProductModel.is_active == True
+            ).all()
+            
+            lines_data.append({
+                "line_id": line.line_id,
+                "line_name": line.line_name,
+                "models": [
+                    {
+                        "model_id": model.model_id,
+                        "model_name": model.model_name,
+                        "model_code": model.model_code
+                    }
+                    for model in models
+                ]
+            })
+        
+        return {
+            "department_id": department_id,
+            "lines": lines_data
+        }
+    finally:
+        tenant_db.close()
+
+
+@router.get("/screen4-stations")
+async def get_stations_data(
+    plant_id: str,
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """Get all stations for this plant"""
+    tenant_db = _get_tenant_db(current_admin)
+    
+    try:
+        tenant_db = _ensure_tenant_schema(current_admin, tenant_db)
+        
+        # Get all stations
+        stations = tenant_db.query(Station).filter(
+            Station.plant_id == plant_id,
+            Station.operational_status == "active"
+        ).all()
+        
+        stations_data = []
+        for station in stations:
+            # Get characteristics
+            characteristics = tenant_db.query(Characteristic).filter(
+                Characteristic.station_id == station.station_id,
+                Characteristic.is_active == True
+            ).all()
+            
+            stations_data.append({
+                "station_id": station.station_id,
+                "station_name": station.station_name,
+                "department_id": station.department_id,
+                "line_id": station.line_id,
+                "sampling_frequency_minutes": station.sampling_frequency_minutes,
+                "characteristics": [
+                    {
+                        "characteristic_id": char.characteristic_id,
+                        "characteristic_name": char.characteristic_name,
+                        "unit_of_measure": char.unit_of_measure,
+                        "target_value": char.target_value,
+                        "usl": char.usl,
+                        "lsl": char.lsl,
+                        "ucl": char.ucl,
+                        "lcl": char.lcl,
+                        "sample_size": char.sample_size,
+                        "check_frequency_minutes": char.check_frequency_minutes,
+                        "chart_type": char.chart_type.value if char.chart_type else None
+                    }
+                    for char in characteristics
+                ]
+            })
+        
+        return {
+            "plant_id": plant_id,
+            "stations": stations_data
+        }
+    finally:
+        tenant_db.close()
+
+
+@router.get("/screen5-users")
+async def get_users_data(
+    plant_id: str,
+    current_admin: Admin = Depends(get_current_admin),
+):
+    """Get all users for this plant"""
+    tenant_db = _get_tenant_db(current_admin)
+    
+    try:
+        tenant_db = _ensure_tenant_schema(current_admin, tenant_db)
+        
+        # Get all plant memberships
+        memberships = tenant_db.query(PlantMembership).filter(
+            PlantMembership.plant_id == plant_id,
+            PlantMembership.is_active == True
+        ).all()
+        
+        users_data = []
+        for membership in memberships:
+            user = tenant_db.query(User).filter(
+                User.user_id == membership.user_id
+            ).first()
+            
+            if user:
+                # Check offsite access
+                offsite_grant = tenant_db.query(OffsiteAccessGrant).filter(
+                    OffsiteAccessGrant.plant_id == plant_id,
+                    OffsiteAccessGrant.user_id == user.user_id,
+                    OffsiteAccessGrant.is_active == True
+                ).first()
+                
+                users_data.append({
+                    "user_id": user.user_id,
+                    "role": membership.role.value,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "phone_country_code": user.phone_country_code,
+                    "phone_number": user.phone_number.replace(user.phone_country_code, ""),
+                    "email": user.email,
+                    "shift_id": user.default_shift_id,
+                    "offsite_permission": offsite_grant is not None
+                })
+        
+        return {
+            "plant_id": plant_id,
+            "users": users_data
+        }
+    finally:
+        tenant_db.close()

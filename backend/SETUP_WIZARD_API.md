@@ -59,7 +59,7 @@ Authorization: Bearer <admin_jwt_token>
 ### 2. Screen 1: Plant Setup
 **POST** `/admin/setup/screen1-plant`
 
-Creates plant with company name, address, and multiple shifts.
+Creates or updates plant with company name, address, and multiple shifts.
 
 **Headers:**
 ```
@@ -96,8 +96,9 @@ Authorization: Bearer <admin_jwt_token>
 - Times must be in `HH:MM AM/PM` format (e.g., `"06:00 AM"`)
 - Minimum 1 shift required, no maximum
 - Updates company name in public schema
-- Creates plant in tenant schema
-- Automatically creates SetupProgress tracker
+- **If plant exists:** Updates plant details and replaces all shifts
+- **If plant doesn't exist:** Creates new plant in tenant schema
+- Automatically creates or updates SetupProgress tracker
 
 **Response:**
 ```json
@@ -111,25 +112,29 @@ Authorization: Bearer <admin_jwt_token>
 ---
 
 ### 3. Screen 2: Add Departments
-**POST** `/admin/setup/screen2-departments?plant_id=<plant_id>`
+**POST** `/admin/setup/screen2-departments?plant_id=<plant_id>&replace_all=<true|false>`
 
-Creates multiple departments for the plant.
+Creates or updates departments for the plant.
 
 **Headers:**
 ```
 Authorization: Bearer <admin_jwt_token>
 ```
 
+**Query Parameters:**
+- `plant_id` (required): Plant UUID
+- `replace_all` (optional, default: `false`): 
+  - `false`: Creates new departments or updates existing ones by name (incremental mode)
+  - `true`: Deletes all existing departments and replaces with the submitted list
+
 **Request Body:**
 ```json
 [
   {
-    "department_name": "Assembly",
-    "department_code": "ASM"
+    "department_name": "Assembly"
   },
   {
-    "department_name": "Welding",
-    "department_code": "WLD"
+    "department_name": "Welding"
   },
   {
     "department_name": "Painting"
@@ -137,9 +142,25 @@ Authorization: Bearer <admin_jwt_token>
 ]
 ```
 
+**Behavior Examples:**
+
+**Incremental Mode (default, `replace_all=false`):**
+```
+Call 1: POST ["Assembly", "Welding"]     → Creates both ✅
+Call 2: POST ["Painting"]                → Adds Painting, keeps Assembly & Welding ✅
+Call 3: POST ["Assembly", "Machining"]   → Keeps Assembly, updates it, adds Machining ✅
+```
+
+**Replace Mode (`replace_all=true`):**
+```
+Call 1: POST ["Assembly", "Welding"]     → Creates both ✅
+Call 2: POST ["Painting"]                → Deletes Assembly & Welding, creates Painting ⚠️
+```
+
 **Notes:**
-- `department_code` is optional
 - Minimum 1 department required (array must have at least 1 item)
+- **Incremental mode (recommended):** Matches departments by name (case-insensitive), creates new ones, updates existing ones
+- **Replace mode:** Deletes all existing departments for the plant and their related data (lines, models, stations)
 - Updates progress: `departments_completed = true`, `current_step = lines_models`
 
 **Response:**
@@ -154,14 +175,20 @@ Authorization: Bearer <admin_jwt_token>
 ---
 
 ### 4. Screen 3: Add Lines & Models
-**POST** `/admin/setup/screen3-lines-models?plant_id=<plant_id>`
+**POST** `/admin/setup/screen3-lines-models?plant_id=<plant_id>&replace_all=<true|false>`
 
-Creates production lines with product models for a department.
+Creates or updates production lines with product models for a department.
 
 **Headers:**
 ```
 Authorization: Bearer <admin_jwt_token>
 ```
+
+**Query Parameters:**
+- `plant_id` (required): Plant UUID
+- `replace_all` (optional, default: `false`): 
+  - `false`: Creates new lines/models or updates existing ones by name/code (incremental mode)
+  - `true`: Deletes all existing lines/models for the department and replaces with the submitted list
 
 **Request Body:**
 ```json
@@ -194,9 +221,26 @@ Authorization: Bearer <admin_jwt_token>
 }
 ```
 
+**Behavior Examples:**
+
+**Incremental Mode (default, `replace_all=false`):**
+```
+Call 1: POST with Line A [Model X, Model Y]   → Creates Line A with 2 models ✅
+Call 2: POST with Line B [Model Z]            → Adds Line B, keeps Line A ✅
+Call 3: POST with Line A [Model X, Model W]   → Updates Line A, adds Model W, keeps Model X ✅
+```
+
+**Replace Mode (`replace_all=true`):**
+```
+Call 1: POST with Line A [Model X, Model Y]   → Creates Line A with 2 models ✅
+Call 2: POST with Line B [Model Z]            → Deletes Line A, creates Line B ⚠️
+```
+
 **Notes:**
 - Each line must have at least 1 model
 - Minimum 1 line required in array
+- **Incremental mode (recommended):** Matches lines by name (case-insensitive) and models by code (case-insensitive)
+- **Replace mode:** Deletes all existing lines/models for the specified department and their related stations
 - Creates lines and models in single transaction
 - Updates progress: `lines_models_completed = true`, `current_step = stations`
 
@@ -351,6 +395,228 @@ The wizard automatically tracks progress:
 5. **After completion:** Returns `setup_completed: true`, `current_step: "completed"`
 
 Mobile app should call `/admin/setup/status` on app launch to check if setup is required and resume at the correct step.
+
+---
+
+## State Restoration (Back Navigation)
+
+When users navigate back to a previously completed screen, the frontend should retrieve saved data to pre-fill the form.
+
+### Screen 1: Get Plant Setup Data
+**GET** `/admin/setup/screen1-plant?plant_id=<plant_id>`
+
+Retrieves saved plant setup data.
+
+**Response:**
+```json
+{
+  "company_name": "Acme Manufacturing",
+  "plant_name": "Main Plant",
+  "address": "123 Industrial Blvd, Detroit, MI 48201",
+  "shifts": [
+    {
+      "start_time": "06:00 AM",
+      "end_time": "02:00 PM",
+      "shift_name": "Day Shift"
+    }
+  ]
+}
+```
+
+### Screen 2: Get Departments Data
+**GET** `/admin/setup/screen2-departments?plant_id=<plant_id>`
+
+Retrieves all created departments.
+
+**Response:**
+```json
+{
+  "departments": [
+    {
+      "department_id": "dept-1",
+      "department_name": "Assembly"
+    },
+    {
+      "department_id": "dept-2",
+      "department_name": "Welding"
+    }
+  ]
+}
+```
+
+### Screen 3: Get Lines & Models Data
+**GET** `/admin/setup/screen3-lines-models?plant_id=<plant_id>&department_id=<dept_id>`
+
+Retrieves production lines and models for a specific department.
+
+**Response:**
+```json
+{
+  "department_id": "dept-1",
+  "lines": [
+    {
+      "line_id": "line-1",
+      "line_name": "Line A",
+      "models": [
+        {
+          "model_id": "model-1",
+          "model_name": "Model X",
+          "model_code": "MDL-X"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Screen 4: Get All Stations
+**GET** `/admin/setup/screen4-stations?plant_id=<plant_id>`
+
+Retrieves all stations for the plant with their characteristics.
+
+**Response:**
+```json
+{
+  "plant_id": "plant-1",
+  "stations": [
+    {
+      "station_id": "station-1",
+      "station_name": "Final Assembly Station 1",
+      "department_id": "dept-1",
+      "line_id": "line-1",
+      "sampling_frequency_minutes": 30,
+      "characteristics": [
+        {
+          "characteristic_id": "char-1",
+          "characteristic_name": "Torque",
+          "unit_of_measure": "Nm",
+          "target_value": 50.0,
+          "usl": 55.0,
+          "lsl": 45.0,
+          "ucl": 53.0,
+          "lcl": 47.0,
+          "sample_size": 5,
+          "check_frequency_minutes": 30,
+          "chart_type": "I-MR"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Screen 5: Get Users Data
+**GET** `/admin/setup/screen5-users?plant_id=<plant_id>`
+
+Retrieves all users for the plant.
+
+**Response:**
+```json
+{
+  "plant_id": "plant-1",
+  "users": [
+    {
+      "user_id": "user-1",
+      "role": "manager",
+      "first_name": "John",
+      "last_name": "Doe",
+      "phone_country_code": "+1",
+      "phone_number": "5551234567",
+      "email": "john@example.com",
+      "shift_id": "shift-1",
+      "offsite_permission": true
+    }
+  ]
+}
+```
+
+**Usage Pattern:**
+1. User navigates back to a previous screen
+2. Frontend calls the appropriate GET endpoint with `plant_id` (and `department_id` for Screen 3)
+3. Frontend pre-fills the form with returned data
+4. User can edit and resubmit via the POST endpoint
+
+---
+
+## Helper Endpoints (Dropdowns)
+
+These endpoints provide lists for dropdown selections in the wizard.
+
+### Get Shifts List
+**GET** `/admin/setup/shifts?plant_id=<plant_id>`
+
+Returns all shifts for a plant (used in Screen 5 user setup).
+
+**Response:**
+```json
+{
+  "plant_id": "plant-1",
+  "shifts": [
+    {
+      "shift_id": "shift-1",
+      "shift_name": "Day Shift",
+      "start_time": "06:00 AM",
+      "end_time": "02:00 PM"
+    }
+  ]
+}
+```
+
+### Get Departments List
+**GET** `/admin/setup/departments?plant_id=<plant_id>`
+
+Returns all departments for a plant (used in Screen 3 and 4).
+
+**Response:**
+```json
+{
+  "plant_id": "plant-1",
+  "departments": [
+    {
+      "department_id": "dept-1",
+      "department_name": "Assembly"
+    }
+  ]
+}
+```
+
+### Get Production Lines List
+**GET** `/admin/setup/lines?plant_id=<plant_id>&department_id=<dept_id>`
+
+Returns all production lines for a department (used in Screen 4).
+
+**Response:**
+```json
+{
+  "plant_id": "plant-1",
+  "department_id": "dept-1",
+  "lines": [
+    {
+      "line_id": "line-1",
+      "line_name": "Line A"
+    }
+  ]
+}
+```
+
+### Get Product Models List
+**GET** `/admin/setup/models?line_id=<line_id>`
+
+Returns all product models for a line (used in Screen 4).
+
+**Response:**
+```json
+{
+  "line_id": "line-1",
+  "models": [
+    {
+      "model_id": "model-1",
+      "model_name": "Model X",
+      "model_code": "MDL-X"
+    }
+  ]
+}
+```
 
 ---
 

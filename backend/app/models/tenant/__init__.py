@@ -14,6 +14,7 @@ from app.models.tenant.production_line import ProductionLine
 from app.models.tenant.product_model import ProductModel
 from app.models.tenant.station import Station
 from app.models.tenant.station_employee import StationEmployee
+from app.models.tenant.station_checkin import StationCheckIn
 from app.models.tenant.characteristic import Characteristic
 from app.models.tenant.sampling_instruction import SamplingInstruction
 from app.models.tenant.sample import Sample
@@ -47,6 +48,7 @@ __all__ = [
     "ProductModel",
     "Station",
     "StationEmployee",
+    "StationCheckIn",
     "Characteristic",
     "SamplingInstruction",
     "Sample",

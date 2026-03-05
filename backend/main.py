@@ -23,6 +23,7 @@ from app.routes.admin_users import router as admin_users_router
 from app.routes.payment import router as payment_router
 from app.routes.plans import router as plans_router
 from app.routes.setup_wizard import router as setup_wizard_router
+from app.routes.dashboard import router as dashboard_router
 
 settings = get_settings()
 
@@ -97,6 +98,7 @@ app.include_router(admin_users_router)
 app.include_router(payment_router)
 app.include_router(plans_router)
 app.include_router(setup_wizard_router)
+app.include_router(dashboard_router)
 
 
 # ── Health check ──────────────────────────────────────────────
