@@ -1,7 +1,6 @@
 """Pocketwatch.ai FastAPI Application — Multi-Tenant"""
 
 from contextlib import asynccontextmanager
-
 from app.config import get_settings
 from app.database import init_db
 from fastapi import FastAPI, Request, status
@@ -14,12 +13,17 @@ from app.models.company import Company  # noqa: F401
 from app.models.admin import Admin  # noqa: F401
 from app.models.admin_otp import AdminOTP  # noqa: F401
 from app.models.admin_refresh_token import AdminRefreshToken  # noqa: F401
+from app.models.payment import PaymentMethod, Transaction, Subscription  # noqa: F401
+from app.models.plan import CompanySubscription  # noqa: F401
 
 # ── Routers ──
 from app.routes.auth import router as admin_auth_router
 from app.routes.users_auth import router as user_auth_router
-from app.routes.admin_plants import router as admin_plants_router
 from app.routes.admin_users import router as admin_users_router
+from app.routes.payment import router as payment_router
+from app.routes.plans import router as plans_router
+from app.routes.setup_wizard import router as setup_wizard_router
+from app.routes.dashboard import router as dashboard_router
 
 settings = get_settings()
 
@@ -90,8 +94,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ── Routers ───────────────────────────────────────────────────
 app.include_router(admin_auth_router)
 app.include_router(user_auth_router)
-app.include_router(admin_plants_router)
 app.include_router(admin_users_router)
+app.include_router(payment_router)
+app.include_router(plans_router)
+app.include_router(setup_wizard_router)
+app.include_router(dashboard_router)
 
 
 # ── Health check ──────────────────────────────────────────────

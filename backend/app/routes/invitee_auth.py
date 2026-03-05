@@ -63,7 +63,7 @@ async def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
         )
 
     # Check if user is active
-    if not user.is_active:
+    if user.is_active is False:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is inactive. Please contact support.",
@@ -94,7 +94,7 @@ async def send_otp(data: SendOTPRequest, db: Session = Depends(get_db)):
     return SendOTPResponse(
         message=f"OTP has been sent to {data.phone_number}",
         phone_number=data.phone_number,
-        session_id=otp_record.id,
+        session_id = otp_record.id,
     )
 
 

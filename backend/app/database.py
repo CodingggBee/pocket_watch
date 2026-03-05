@@ -63,6 +63,8 @@ def get_db() -> Generator[Session, None, None]:
 def get_tenant_db(company_id: str) -> Generator[Session, None, None]:
     """
     Session with search_path set to the company's private schema.
+    
+    Uses after_transaction_create to set search_path for EVERY transaction.
 
     Usage (in a route dependency):
         from fastapi import Depends
@@ -74,11 +76,19 @@ def get_tenant_db(company_id: str) -> Generator[Session, None, None]:
     Or use the helper `tenant_db_dependency(company_id)` below.
     """
     from app.utils.schema import get_schema_name  # avoid circular import
+    
     schema = get_schema_name(company_id)
     db = SessionLocal()
+    
+    # Event listener fires for EVERY new transaction (including after commits)
+    @event.listens_for(db, "after_transaction_create")
+    def set_search_path_for_transaction(session, transaction):
+        """Set search_path whenever a new transaction is created."""
+        if transaction.parent is None:  # Only for top-level transactions
+            # Execute SET LOCAL on the connection associated with this transaction
+            session.connection().execute(text(f'SET LOCAL search_path TO "{schema}", public'))
+    
     try:
-        # SET LOCAL scopes the path to the current transaction only
-        db.execute(text(f"SET LOCAL search_path TO {schema}, public"))
         yield db
     finally:
         db.close()

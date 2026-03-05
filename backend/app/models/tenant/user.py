@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 from app.database import TenantBase
-from sqlalchemy import Boolean, Column, DateTime, String
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String
 
 
 class User(TenantBase):
@@ -15,8 +15,16 @@ class User(TenantBase):
     )
     phone_number = Column(String(20), unique=True, nullable=False, index=True)
     phone_country_code = Column(String(5), nullable=True)
+    
+    # Name fields
+    first_name = Column(String(100), nullable=True)
+    last_name = Column(String(100), nullable=True)
     full_name = Column(String(255), nullable=True)
+    
     email = Column(String(255), nullable=True, index=True)
+
+    # Default shift assignment
+    default_shift_id = Column(String(36), ForeignKey("shifts.shift_id"), nullable=True, index=True)
 
     # Auth
     pin_hash = Column(String(255), nullable=True)

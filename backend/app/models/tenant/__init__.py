@@ -4,6 +4,8 @@ from app.models.tenant.user import User
 from app.models.tenant.otp_cache import OTPCache
 from app.models.tenant.user_session import UserSession
 from app.models.tenant.plant import Plant
+from app.models.tenant.shift import Shift
+from app.models.tenant.setup_progress import SetupProgress
 from app.models.tenant.plant_membership import PlantMembership
 from app.models.tenant.offsite_access_grant import OffsiteAccessGrant
 from app.models.tenant.geofence_check import GeofenceCheck
@@ -12,6 +14,7 @@ from app.models.tenant.production_line import ProductionLine
 from app.models.tenant.product_model import ProductModel
 from app.models.tenant.station import Station
 from app.models.tenant.station_employee import StationEmployee
+from app.models.tenant.station_checkin import StationCheckIn
 from app.models.tenant.characteristic import Characteristic
 from app.models.tenant.sampling_instruction import SamplingInstruction
 from app.models.tenant.sample import Sample
@@ -35,6 +38,8 @@ __all__ = [
     "OTPCache",
     "UserSession",
     "Plant",
+    "Shift",
+    "SetupProgress",
     "PlantMembership",
     "OffsiteAccessGrant",
     "GeofenceCheck",
@@ -43,6 +48,7 @@ __all__ = [
     "ProductModel",
     "Station",
     "StationEmployee",
+    "StationCheckIn",
     "Characteristic",
     "SamplingInstruction",
     "Sample",
