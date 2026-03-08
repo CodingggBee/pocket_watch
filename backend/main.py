@@ -22,6 +22,7 @@ from app.routes.charts import (
 from app.routes.payment import router as payment_router
 from app.routes.plans import router as plans_router
 from app.routes.setup_wizard import router as setup_wizard_router
+from app.routes.alerts import router as alerts_router
 from app.routes.users_auth import router as user_auth_router
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -103,6 +104,7 @@ app.include_router(payment_router)
 app.include_router(plans_router)
 app.include_router(setup_wizard_router)
 app.include_router(charts_router)
+app.include_router(alerts_router)
 # app.include_router(dashboard_router)  # TODO: file not yet created
 
 

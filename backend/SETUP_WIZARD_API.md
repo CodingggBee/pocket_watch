@@ -272,32 +272,36 @@ Authorization: Bearer <admin_jwt_token>
   "station_name": "Final Assembly Station 1",
   "department_id": "dept-1",
   "line_id": "line-1",
-  "model_id": "model-1",
+  "model_ids": ["100156AB", "uuid-or-code"],
   "sampling_frequency_minutes": 30,
   "characteristics": [
     {
       "characteristic_name": "Torque",
       "unit_of_measure": "Nm",
-      "target_value": 50.0,
       "usl": 55.0,
       "lsl": 45.0,
-      "ucl": 53.0,
-      "lcl": 47.0,
-      "sample_size": 5,
+      "sample_size": 1,
       "check_frequency_minutes": 30,
       "chart_type": "I-MR"
     },
     {
-      "characteristic_name": "Pressure",
-      "unit_of_measure": "PSI",
-      "target_value": 100.0,
-      "usl": 110.0,
-      "lsl": 90.0,
-      "chart_type": "Xbar-R"
+      "characteristic_name": "Visual Defects",
+      "unit_of_measure": "defects",
+      "sample_size": 20,
+      "chart_type": "P-Chart"
     }
   ]
 }
 ```
+
+**Field Notes:**
+| Field | Rule |
+|---|---|
+| `model_ids` | **Array** of model UUIDs or `model_code` strings (e.g. `"100156AB"`). Auto-resolved to UUIDs. |
+| `target_value` | Auto-calculated as `(lsl + usl) / 2` if not supplied. |
+| `ucl` / `lcl` | **Do NOT send.** Left null at setup; computed dynamically by chart endpoints from a rolling 30-sample window. |
+| `chart_type` | `"I-MR"` (default) · `"Xbar-R"` · `"P-Chart"` |
+| `sample_size` | `1` = I-MR; `> 1` auto-infers Xbar-R; use `"P-Chart"` type for defect-count attribute data. |
 
 **Notes:**
 - Minimum 1 characteristic required
@@ -306,14 +310,15 @@ Authorization: Bearer <admin_jwt_token>
   - PREMIUM plan: Maximum `stations_count` stations
   - Returns `403 Forbidden` with upgrade message when limit reached
 - All characteristic fields are optional except `characteristic_name`
-- Valid `chart_type` values: `"I-MR"`, `"Xbar-R"`, `"P-Chart"` (defaults to `"I-MR"`)
 
 **Response (Success):**
 ```json
 {
   "message": "Station created successfully",
   "station_id": "station-1",
-  "characteristics_count": 2
+  "model_ids": ["resolved-uuid-1", "resolved-uuid-2"],
+  "characteristics_count": 2,
+  "next_step": "users"
 }
 ```
 
