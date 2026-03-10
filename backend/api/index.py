@@ -1,6 +1,6 @@
 """
 Vercel serverless entry point for FastAPI.
-Exposes the FastAPI app for Vercel's Python runtime.
+Vercel has native ASGI support, so we just export the app directly.
 """
 
 import os
@@ -18,8 +18,7 @@ try:
 except Exception as e:
     print(f"⚠ DB init deferred: {e}")
 
-# Import the FastAPI application
-from main import app  # noqa: E402
+# Import and export FastAPI app
+from main import app  # noqa: E402, F401
 
-# Vercel expects 'app' variable for ASGI applications
-# No need for Mangum - Vercel handles ASGI→Lambda internally
+# Vercel will use 'app' directly via native ASGI support

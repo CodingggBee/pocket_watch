@@ -1,9 +1,14 @@
 """Station model — tenant schema"""
+
+import enum
 import uuid
 from datetime import datetime
+
 from app.database import TenantBase
-from sqlalchemy import Boolean, Column, DateTime, Enum as SQLEnum, ForeignKey, Integer, String, Text
-import enum
+from sqlalchemy import Boolean, Column, DateTime
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 
 
 class ShiftConfig(str, enum.Enum):
@@ -29,7 +34,9 @@ class Station(TenantBase):
     __tablename__ = "stations"
 
     station_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    plant_id = Column(String(36), ForeignKey("plants.plant_id"), nullable=False, index=True)
+    plant_id = Column(
+        String(36), ForeignKey("plants.plant_id"), nullable=False, index=True
+    )
     department_id = Column(
         String(36), ForeignKey("departments.department_id"), nullable=True, index=True
     )
@@ -49,11 +56,16 @@ class Station(TenantBase):
     billing_state = Column(
         SQLEnum(BillingState), nullable=False, default=BillingState.PENDING_BILLING
     )
+    # List of product model UUIDs this station processes (stored as JSON array)
+    model_ids = Column(JSONB, nullable=True, default=list)
     data_entry_locked = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
+
+    def __repr__(self):
+        return f"<Station(id={self.station_id}, name={self.station_name})>"
 
     def __repr__(self):
         return f"<Station(id={self.station_id}, name={self.station_name})>"

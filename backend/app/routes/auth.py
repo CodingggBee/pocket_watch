@@ -9,6 +9,21 @@ from app.models.admin import Admin
 from app.models.admin_otp import AdminOTP, OTPPurpose
 from app.models.admin_refresh_token import AdminRefreshToken
 from app.models.company import Company
+from app.schemas.admin_profile import (
+    AdminBasicInfo,
+    AdminDetailedProfileResponse,
+    CharacteristicResponse,
+    CompanyResponse,
+    DepartmentResponse,
+    PlantResponse,
+    ProductionLineResponse,
+    ProductModelResponse,
+    SetupProgressResponse,
+    ShiftResponse,
+    StationResponse,
+    SubscriptionResponse,
+)
+from app.schemas.admin_profile import UserResponse as SetupUserResponse
 from app.schemas.auth import (
     CreateAccountInfoRequest,
     CreateAccountInfoResponse,
@@ -419,10 +434,309 @@ async def login(data: LoginRequest, response: Response, db: Session = Depends(ge
     )
 
 
-@router.get("/me", response_model=UserResponse)
-async def get_me(current_user: Admin = Depends(get_current_admin)):
-    """Get current admin profile."""
-    return current_user
+@router.get("/me", response_model=AdminDetailedProfileResponse)
+async def get_me(
+    current_user: Admin = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Get comprehensive admin profile with all setup data and progress"""
+    from app.database import get_tenant_db
+    from app.models.plan import CompanySubscription, PlanType
+    from app.models.tenant.characteristic import Characteristic
+    from app.models.tenant.department import Department
+    from app.models.tenant.plant import Plant
+    from app.models.tenant.product_model import ProductModel
+    from app.models.tenant.production_line import ProductionLine
+    from app.models.tenant.setup_progress import SetupProgress
+    from app.models.tenant.shift import Shift
+    from app.models.tenant.station import Station
+    from app.models.tenant.user import User
+    from sqlalchemy import text
+
+    # Get company info
+    company = (
+        db.query(Company).filter(Company.company_id == current_user.company_id).first()
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # Get subscription
+    subscription = (
+        db.query(CompanySubscription)
+        .filter(CompanySubscription.company_id == current_user.company_id)
+        .first()
+    )
+
+    # Auto-create FREE plan if missing
+    if not subscription:
+        subscription = CompanySubscription(
+            company_id=current_user.company_id,
+            plan_type=PlanType.FREE,
+            stations_count=1,
+            monthly_cost=0,
+        )
+        db.add(subscription)
+        db.commit()
+        db.refresh(subscription)
+
+    # Initialize response data
+    plants_list = []
+    departments_list = []
+    lines_list = []
+    stations_list = []
+    users_list = []
+    setup_progress_data = None
+    total_characteristics = 0
+
+    # Try to get tenant data (may not exist yet)
+    try:
+        tenant_db = next(get_tenant_db(current_user.company_id))
+
+        # Verify schema exists
+        try:
+            result = tenant_db.execute(text("SELECT 1 FROM plants LIMIT 1"))
+            result.fetchone()
+            schema_exists = True
+        except:
+            schema_exists = False
+
+        if schema_exists:
+            # Get all plants
+            plants = tenant_db.query(Plant).filter(Plant.is_active == True).all()
+
+            for plant in plants:
+                # Get shifts for this plant
+                shifts = (
+                    tenant_db.query(Shift)
+                    .filter(Shift.plant_id == plant.plant_id)
+                    .all()
+                )
+                shifts_data = []
+                for shift in shifts:
+                    from datetime import datetime
+
+                    shifts_data.append(
+                        ShiftResponse(
+                            shift_id=shift.shift_id,
+                            shift_name=shift.shift_name,
+                            start_time=datetime.combine(
+                                datetime.today(), shift.start_time
+                            ).strftime("%I:%M %p"),
+                            end_time=datetime.combine(
+                                datetime.today(), shift.end_time
+                            ).strftime("%I:%M %p"),
+                        )
+                    )
+
+                plants_list.append(
+                    PlantResponse(
+                        plant_id=plant.plant_id,
+                        plant_name=plant.plant_name,
+                        plant_code=plant.plant_code,
+                        address=plant.address,
+                        city=plant.city,
+                        state=plant.state,
+                        country=plant.country,
+                        postal_code=plant.postal_code,
+                        timezone=plant.timezone,
+                        is_active=plant.is_active,
+                        geofence_radius_meters=plant.geofence_radius_meters,
+                        shifts=shifts_data,
+                    )
+                )
+
+                # Get setup progress
+                if plant.plant_id:
+                    progress = (
+                        tenant_db.query(SetupProgress)
+                        .filter(SetupProgress.plant_id == plant.plant_id)
+                        .first()
+                    )
+                    if progress:
+                        setup_progress_data = SetupProgressResponse(
+                            current_step=progress.current_step.value,
+                            plant_setup_completed=progress.plant_setup_completed,
+                            departments_completed=progress.departments_completed,
+                            lines_models_completed=progress.lines_models_completed,
+                            stations_completed=progress.stations_completed,
+                            users_completed=progress.users_completed,
+                            setup_completed=progress.setup_completed,
+                            started_at=progress.started_at.isoformat(),
+                            completed_at=(
+                                progress.completed_at.isoformat()
+                                if progress.completed_at
+                                else None
+                            ),
+                            last_updated_at=progress.last_updated_at.isoformat(),
+                        )
+
+            # Get all departments
+            departments = tenant_db.query(Department).all()
+            for dept in departments:
+                departments_list.append(
+                    DepartmentResponse(
+                        department_id=dept.department_id,
+                        department_name=dept.department_name,
+                        plant_id=dept.plant_id,
+                    )
+                )
+
+            # Get all production lines with their models
+            lines = tenant_db.query(ProductionLine).all()
+            for line in lines:
+                models = (
+                    tenant_db.query(ProductModel)
+                    .filter(ProductModel.line_id == line.line_id)
+                    .all()
+                )
+                models_data = [
+                    ProductModelResponse(
+                        model_id=model.model_id,
+                        model_name=model.model_name,
+                        model_code=model.model_code,
+                    )
+                    for model in models
+                ]
+                lines_list.append(
+                    ProductionLineResponse(
+                        line_id=line.line_id,
+                        line_name=line.line_name,
+                        department_id=line.department_id,
+                        models=models_data,
+                    )
+                )
+
+            # Get all stations with characteristics
+            stations = tenant_db.query(Station).all()
+            for station in stations:
+                characteristics = (
+                    tenant_db.query(Characteristic)
+                    .filter(Characteristic.station_id == station.station_id)
+                    .all()
+                )
+
+                characteristics_data = [
+                    CharacteristicResponse(
+                        characteristic_id=char.characteristic_id,
+                        characteristic_name=char.characteristic_name,
+                        unit_of_measure=char.unit_of_measure,
+                        lsl=float(char.lsl) if char.lsl is not None else None,
+                        usl=float(char.usl) if char.usl is not None else None,
+                        target_value=(
+                            float(char.target_value)
+                            if char.target_value is not None
+                            else None
+                        ),
+                        check_frequency_minutes=char.check_frequency_minutes,
+                        sample_size=char.sample_size,
+                        chart_type=(
+                            char.chart_type.value
+                            if hasattr(char.chart_type, "value")
+                            else str(char.chart_type) if char.chart_type else "I-MR"
+                        ),
+                    )
+                    for char in characteristics
+                ]
+                total_characteristics += len(characteristics_data)
+
+                stations_list.append(
+                    StationResponse(
+                        station_id=station.station_id,
+                        station_name=station.station_name,
+                        station_code=station.station_code,
+                        department_id=station.department_id,
+                        line_id=station.line_id,
+                        operational_status=(
+                            station.operational_status.value
+                            if hasattr(station.operational_status, "value")
+                            else str(station.operational_status)
+                        ),
+                        sampling_frequency_minutes=station.sampling_frequency_minutes,
+                        characteristics=characteristics_data,
+                    )
+                )
+
+            # Get all users with their plant roles
+            from app.models.tenant.plant_membership import PlantMembership
+
+            users = tenant_db.query(User).all()
+            for user in users:
+                # Get user's primary role (first membership found)
+                membership = (
+                    tenant_db.query(PlantMembership)
+                    .filter(PlantMembership.user_id == user.user_id)
+                    .first()
+                )
+                role = (
+                    membership.role.value
+                    if membership and hasattr(membership.role, "value")
+                    else (membership.role if membership else "member")
+                )
+
+                users_list.append(
+                    SetupUserResponse(
+                        user_id=user.user_id,
+                        first_name=user.first_name,
+                        last_name=user.last_name,
+                        full_name=user.full_name,
+                        phone_country_code=user.phone_country_code,
+                        phone_number=user.phone_number,
+                        email=user.email,
+                        role=role,
+                        is_active=user.is_active,
+                        phone_verified=user.phone_verified,
+                    )
+                )
+
+        tenant_db.close()
+    except Exception as e:
+        # Tenant schema not yet provisioned or other error
+        import traceback
+
+        print(f"[ME] Error fetching tenant data: {e}")
+        print(traceback.format_exc())
+        # Continue with empty lists - admin can still see their basic info
+
+    return AdminDetailedProfileResponse(
+        admin=AdminBasicInfo(
+            id=current_user.id,
+            email=current_user.email,
+            first_name=current_user.first_name,
+            last_name=current_user.last_name,
+            full_name=current_user.full_name,
+            phone_number=current_user.phone_number,
+            is_verified=current_user.is_verified,
+            is_active=current_user.is_active,
+            profile_completed=current_user.profile_completed,
+            created_at=current_user.created_at.isoformat(),
+        ),
+        company=CompanyResponse(
+            company_id=company.company_id,
+            company_name=company.company_name,
+            is_active=company.is_active,
+            created_at=company.created_at.isoformat(),
+        ),
+        subscription=SubscriptionResponse(
+            plan_type=subscription.plan_type.value,
+            stations_count=subscription.stations_count,
+            monthly_cost=float(subscription.monthly_cost),
+            is_active=subscription.is_active,
+        ),
+        setup_progress=setup_progress_data,
+        plants=plants_list,
+        departments=departments_list,
+        production_lines=lines_list,
+        stations=stations_list,
+        users=users_list,
+        summary={
+            "total_plants": len(plants_list),
+            "total_departments": len(departments_list),
+            "total_lines": len(lines_list),
+            "total_stations": len(stations_list),
+            "total_users": len(users_list),
+            "total_characteristics": total_characteristics,
+        },
+    )
 
 
 # ========================================
