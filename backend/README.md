@@ -3,7 +3,7 @@
 ## Commands to run the server:
 
 ```cmd
-cd F:\Pocket_watch\backend
+cd F:\Pocket_watch\backend  
 
 .venv\Scripts\activate.bat
 
