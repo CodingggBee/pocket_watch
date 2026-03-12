@@ -10,8 +10,8 @@ from app.models.admin_otp import AdminOTP, OTPPurpose
 from app.models.admin_refresh_token import AdminRefreshToken
 from app.models.company import Company
 from app.schemas.admin_profile import (
-    AdminBasicInfo,
-    AdminDetailedProfileResponse,
+    UserBasicInfo,
+    DetailedProfileResponse,
     CharacteristicResponse,
     CompanyResponse,
     DepartmentResponse,
@@ -63,6 +63,7 @@ from app.utils.otp import generate_otp
 from app.utils.schema import provision_tenant_tables
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from app.routes.users_auth import get_current_user
 from sqlalchemy.orm import Session
 
 settings = get_settings()
@@ -229,7 +230,7 @@ async def verify_otp_endpoint(
     company_id = user.company_id
     user_id = user.id
 
-    access_token = create_access_token(user_id, extra={"company_id": company_id})
+    access_token = create_access_token(user_id, extra={"company_id": company_id, "role": "admin"})
     refresh_token = create_refresh_token(user_id)
 
     db.add(
@@ -391,7 +392,7 @@ async def login(data: LoginRequest, response: Response, db: Session = Depends(ge
             detail="Please complete your account setup first.",
         )
 
-    access_token = create_access_token(user.id, extra={"company_id": user.company_id})
+    access_token = create_access_token(user.id, extra={"company_id": user.company_id, "role": "admin"})
     refresh_token = create_refresh_token(user.id)
 
     db.add(
@@ -434,14 +435,15 @@ async def login(data: LoginRequest, response: Response, db: Session = Depends(ge
     )
 
 
-@router.get("/me", response_model=AdminDetailedProfileResponse)
+@router.get("/me", response_model=DetailedProfileResponse)
 async def get_me(
-    current_user: Admin = Depends(get_current_admin),
+    current: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get comprehensive admin profile with all setup data and progress"""
+    """Get comprehensive profile with all setup data for current user (Admin or Invitee)"""
     from app.database import get_tenant_db
     from app.models.plan import CompanySubscription, PlanType
+    from app.models.tenant.user import User
     from app.models.tenant.characteristic import Characteristic
     from app.models.tenant.department import Department
     from app.models.tenant.plant import Plant
@@ -453,24 +455,27 @@ async def get_me(
     from app.models.tenant.user import User
     from sqlalchemy import text
 
+    company_id = current["company_id"]
+    user_id = current["user_id"]
+    role = current["role"]
+
     # Get company info
     company = (
-        db.query(Company).filter(Company.company_id == current_user.company_id).first()
+        db.query(Company).filter(Company.company_id == company_id).first()
     )
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
 
-    # Get subscription
     subscription = (
         db.query(CompanySubscription)
-        .filter(CompanySubscription.company_id == current_user.company_id)
+        .filter(CompanySubscription.company_id == company_id)
         .first()
     )
 
     # Auto-create FREE plan if missing
     if not subscription:
         subscription = CompanySubscription(
-            company_id=current_user.company_id,
+            company_id=company_id,
             plan_type=PlanType.FREE,
             stations_count=1,
             monthly_cost=0,
@@ -488,9 +493,8 @@ async def get_me(
     setup_progress_data = None
     total_characteristics = 0
 
-    # Try to get tenant data (may not exist yet)
     try:
-        tenant_db = next(get_tenant_db(current_user.company_id))
+        tenant_db = next(get_tenant_db(company_id))
 
         # Verify schema exists
         try:
@@ -697,19 +701,43 @@ async def get_me(
         print(traceback.format_exc())
         # Continue with empty lists - admin can still see their basic info
 
-    return AdminDetailedProfileResponse(
-        admin=AdminBasicInfo(
-            id=current_user.id,
-            email=current_user.email,
-            first_name=current_user.first_name,
-            last_name=current_user.last_name,
-            full_name=current_user.full_name,
-            phone_number=current_user.phone_number,
-            is_verified=current_user.is_verified,
-            is_active=current_user.is_active,
-            profile_completed=current_user.profile_completed,
-            created_at=current_user.created_at.isoformat(),
-        ),
+    # 4. Prepare User/Admin basic info
+    if role == "admin":
+        user_obj = db.query(Admin).filter(Admin.id == user_id).first()
+        user_data = UserBasicInfo(
+            id=user_obj.id,
+            email=user_obj.email,
+            first_name=user_obj.first_name,
+            last_name=user_obj.last_name,
+            full_name=user_obj.full_name,
+            phone_number=user_obj.phone_number,
+            phone_country_code=user_obj.phone_country_code,
+            is_verified=user_obj.is_verified,
+            is_active=user_obj.is_active,
+            profile_completed=user_obj.profile_completed,
+            role="admin",
+            created_at=user_obj.created_at.isoformat() if user_obj.created_at else None
+        )
+    else:
+        # Fetch from tenant schema
+        user_obj = tenant_db.query(User).filter(User.user_id == user_id).first()
+        user_data = UserBasicInfo(
+            id=user_obj.user_id,
+            email=user_obj.email,
+            first_name=user_obj.first_name,
+            last_name=user_obj.last_name,
+            full_name=user_obj.full_name,
+            phone_number=user_obj.phone_number,
+            phone_country_code=user_obj.phone_country_code,
+            is_verified=True,
+            is_active=user_obj.is_active,
+            profile_completed=True,
+            role="invitee",
+            created_at=user_obj.created_at.isoformat() if user_obj.created_at else None
+        )
+
+    return DetailedProfileResponse(
+        user=user_data,
         company=CompanyResponse(
             company_id=company.company_id,
             company_name=company.company_name,
@@ -717,11 +745,15 @@ async def get_me(
             created_at=company.created_at.isoformat(),
         ),
         subscription=SubscriptionResponse(
-            plan_type=subscription.plan_type.value,
+            plan_type=subscription.plan_type.value if hasattr(subscription.plan_type, "value") else str(subscription.plan_type),
             stations_count=subscription.stations_count,
-            monthly_cost=float(subscription.monthly_cost),
-            is_active=subscription.is_active,
+            monthly_cost=subscription.monthly_cost,
+            is_active=True, # assuming active if exists
         ),
+        is_admin=(role == "admin"),
+        subscription_type=subscription.plan_type.value if hasattr(subscription.plan_type, "value") else str(subscription.plan_type),
+        active_plant_id=plants_list[0].plant_id if plants_list else None,
+        setup_completed=(setup_progress_data.setup_completed if setup_progress_data else False),
         setup_progress=setup_progress_data,
         plants=plants_list,
         departments=departments_list,
@@ -789,7 +821,7 @@ async def refresh_token_endpoint(
     # Get company_id for the new token
     admin = db.query(Admin).filter(Admin.id == user_id).first()
     company_id = admin.company_id if admin else None
-    new_access_token = create_access_token(user_id, extra={"company_id": company_id})
+    new_access_token = create_access_token(user_id, extra={"company_id": company_id, "role": "admin"})
     return RefreshTokenResponse(
         access_token=new_access_token,
         token_type="bearer",

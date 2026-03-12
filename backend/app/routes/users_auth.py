@@ -24,6 +24,7 @@ from app.utils.jwt import (
     get_token_expiry,
     verify_access_token,
     verify_refresh_token,
+    decode_token
 )
 from app.utils.otp import generate_numeric_code, generate_otp
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Header, Response, status
@@ -60,6 +61,14 @@ class ResetPINRequest(BaseModel):
     phone_number: str
     otp: str
     new_pin: str
+
+
+class UserProfileUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone_country_code: Optional[str] = None
+    phone_number: Optional[str] = None
 
 
 # ──────────────────────────────────────────────
@@ -229,7 +238,7 @@ async def login_pin(data: LoginPINRequest, response: Response):
 
         access_token = create_access_token(
             user.user_id,
-            extra={"company_id": company_id, "role": "user"},
+            extra={"company_id": company_id, "role": "invitee"},
         )
         refresh_token = create_refresh_token(
             user.user_id,
@@ -319,16 +328,16 @@ async def reset_pin(data: ResetPINRequest):
 
 
 # ──────────────────────────────────────────────
-# AUTH DEPENDENCY: get current user
+# AUTH DEPENDENCY: get current user (handles both Workers and Admins)
 # ──────────────────────────────────────────────
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(user_bearer_scheme),
 ) -> dict:
     """
-    Validates Bearer token for a plant worker.
+    Validates Bearer token.
+    Works for both Plant Workers ("invitee") and Company Owners ("admin").
 
-    Returns a dict with user_id, company_id, and role
-    (does NOT hit the DB — the caller should query the tenant DB themselves).
+    Returns a dict with user_id, company_id, and role.
     """
     token = credentials.credentials
 
@@ -339,12 +348,188 @@ async def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+        
+    payload = decode_token(token)
+    role = payload.get("role")
+    company_id = payload.get("company_id")
 
-    company_id = get_company_id_from_token(token)
-    return {"user_id": user_id, "company_id": company_id, "role": "user"}
+    # If role is missing (older tokens), try to infer it
+    if not role:
+        from app.database import get_db
+        from app.models.admin import Admin
+        db = next(get_db())
+        try:
+            admin = db.query(Admin).filter(Admin.id == user_id).first()
+            if admin:
+                role = "admin"
+                company_id = admin.company_id
+            else:
+                role = "invitee"
+        finally:
+            db.close()
+
+    return {"user_id": user_id, "company_id": company_id, "role": role}
 
 
 @router.get("/me", status_code=status.HTTP_200_OK)
 async def user_me(current: dict = Depends(get_current_user)):
     """Get current user identity from token claims (lightweight — no DB hit)."""
     return current
+
+
+# ──────────────────────────────────────────────
+# CONSOLIDATED PROFILE MANAGEMENT
+# ──────────────────────────────────────────────
+@router.get("/profile", status_code=status.HTTP_200_OK)
+async def get_consolidated_profile(current: dict = Depends(get_current_user)):
+    """
+    Get the profile for the currently logged-in user.
+    Automatically handles both 'admin' and 'user' (worker) roles.
+    """
+    from app.database import get_db
+    from app.models.admin import Admin
+    
+    # If the user is an Admin, fetch from the public schema
+    if current["role"] == "admin":
+        db_gen = get_db()
+        db: Session = next(db_gen)
+        try:
+            admin = db.query(Admin).filter(Admin.id == current["user_id"]).first()
+            if not admin:
+                raise HTTPException(status_code=404, detail="Admin not found")
+            return {
+                "user_id": admin.id,
+                "first_name": admin.first_name,
+                "last_name": admin.last_name,
+                "full_name": admin.full_name,
+                "email": admin.email,
+                "phone_country_code": admin.phone_country_code,
+                "phone_number": admin.phone_number,
+                "role": "admin"
+            }
+        finally:
+            db.close()
+            
+    # Otherwise, fetch from the tenant schema
+    else:
+        db_gen = get_tenant_db(current["company_id"])
+        db: Session = next(db_gen)
+        try:
+            user = db.query(User).filter(User.user_id == current["user_id"]).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+                
+            return {
+                "user_id": user.user_id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "full_name": user.full_name,
+                "email": user.email,
+                "phone_country_code": user.phone_country_code,
+                "phone_number": user.phone_number,
+                "role": "invitee"
+            }
+        finally:
+            db.close()
+
+
+@router.patch("/profile", status_code=status.HTTP_200_OK)
+async def update_consolidated_profile(
+    data: UserProfileUpdate, 
+    current: dict = Depends(get_current_user)
+):
+    """
+    Update the profile for the currently logged-in user.
+    Automatically handles both 'admin' and 'user' (worker) roles.
+    """
+    from app.database import get_db
+    from app.models.admin import Admin
+    
+    # If the user is an Admin, update the public schema
+    if current["role"] == "admin":
+        db_gen = get_db()
+        db: Session = next(db_gen)
+        try:
+            admin = db.query(Admin).filter(Admin.id == current["user_id"]).first()
+            if not admin:
+                raise HTTPException(status_code=404, detail="Admin not found")
+                
+            if data.phone_number and data.phone_number != admin.phone_number:
+                existing = db.query(Admin).filter(Admin.phone_number == data.phone_number).first()
+                if existing:
+                    raise HTTPException(status_code=400, detail="Phone number is already in use")
+            
+            if data.first_name is not None: admin.first_name = data.first_name
+            if data.last_name is not None: admin.last_name = data.last_name
+            if data.phone_country_code is not None: admin.phone_country_code = data.phone_country_code
+            if data.phone_number is not None: admin.phone_number = data.phone_number
+            if data.email is not None: admin.email = data.email
+                
+            if admin.first_name or admin.last_name:
+                admin.full_name = f"{admin.first_name or ''} {admin.last_name or ''}".strip()
+                
+            admin.updated_at = datetime.utcnow()
+            db.commit()
+            
+            return {
+                "message": "Admin profile updated successfully",
+                "user": {
+                    "user_id": admin.id,
+                    "first_name": admin.first_name,
+                    "last_name": admin.last_name,
+                    "full_name": admin.full_name,
+                    "email": admin.email,
+                    "phone_country_code": admin.phone_country_code,
+                    "phone_number": admin.phone_number,
+                    "role": "admin"
+                }
+            }
+        except Exception as e:
+            db.rollback()
+            raise e
+        finally:
+            db.close()
+            
+    # Otherwise, update the tenant schema
+    else:
+        db_gen = get_tenant_db(current["company_id"])
+        db: Session = next(db_gen)
+        try:
+            user = db.query(User).filter(User.user_id == current["user_id"]).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+                
+            if data.phone_number and data.phone_number != user.phone_number:
+                existing = db.query(User).filter(User.phone_number == data.phone_number).first()
+                if existing:
+                    raise HTTPException(status_code=400, detail="Phone number is already in use")
+            
+            if data.first_name is not None: user.first_name = data.first_name
+            if data.last_name is not None: user.last_name = data.last_name
+            if data.email is not None: user.email = data.email
+            if data.phone_country_code is not None: user.phone_country_code = data.phone_country_code
+            if data.phone_number is not None: user.phone_number = data.phone_number
+                
+            if user.first_name or user.last_name:
+                user.full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+
+            db.commit()
+            
+            return {
+                "message": "User profile updated successfully",
+                "user": {
+                    "user_id": user.user_id,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "full_name": user.full_name,
+                    "email": user.email,
+                    "phone_country_code": user.phone_country_code,
+                    "phone_number": user.phone_number,
+                    "role": "invitee"
+                }
+            }
+        except Exception as e:
+            db.rollback()
+            raise e
+        finally:
+            db.close()
