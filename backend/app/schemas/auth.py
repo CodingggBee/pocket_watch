@@ -119,3 +119,10 @@ class LogoutResponse(BaseModel):
 class CreateAccountInfoResponse(BaseModel):
     message: str
     user: Dict[str, Any]
+
+
+class AdminProfileUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone_country_code: Optional[str] = None
+    phone_number: Optional[str] = None

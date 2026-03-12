@@ -29,7 +29,7 @@ class Sample(TenantBase):
     station_id = Column(
         String(36), ForeignKey("stations.station_id"), nullable=False, index=True
     )
-    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False, index=True)
+    user_id = Column(String(36), nullable=True, index=True)
     plant_id = Column(String(36), ForeignKey("plants.plant_id"), nullable=False, index=True)
     sample_number = Column(Integer, nullable=True)
     sample_datetime = Column(DateTime, nullable=False, default=datetime.utcnow)
